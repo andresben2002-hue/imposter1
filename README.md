@@ -85,3 +85,34 @@ The host now initializes from the create/resume acknowledgment as well as room b
 ## November 2026 host Start Round display repair
 
 The host page previously referenced `#wordStats` without including that element in `host.html`. This caused a browser JavaScript exception after rendering the player list, leaving the action section stuck at "Waiting for live room information..." and Start Round disabled even when three people were connected. The element has been added and guarded, and an automated host UI regression test (`host-ui.test.js`) checks that the full page renders and progresses through Start Round, Open Voting and Reveal Imposter. Upload ALL changed files (at least `public/host.html`, `public/host.js`, and `host-ui.test.js`) and redeploy Render. Use a hard refresh after deployment.
+
+
+## Per-tab sessions and leaving a room
+
+Player identities are now stored in **sessionStorage** rather than device-wide
+localStorage, so separate tabs on the same browser can join as separate players.
+A page refresh in the same tab keeps its identity; closing the tab ends that
+tab's session. Some browsers offer “restore closed tab” and can restore its
+old session, but the server checks room existence when it reconnects.
+
+When the host's tab disconnects, the server waits **4 seconds** to allow a
+refresh or brief network interruption. If the host does not resume within
+that time, the server removes the room and notifies every connected player tab,
+which returns to the join screen. On closing the host tab, expect players to
+reset within about four seconds. You can adjust the wait using the environment
+variable `HOST_DISCONNECT_GRACE_MS` (milliseconds, minimum 1000).
+
+This behavior applies to **each game room**, not every user sharing a Wi-Fi
+network. Hosting a second room in another tab will not end the first one.
+The global used-word history is intentionally shared between rooms so words
+are not accidentally reused just because a different host starts a game.
+
+## Session safety and recovering a host room (v2.4)
+
+- Every player tab uses `sessionStorage` for its session. A duplicated tab may copy this storage, but the server **rejects** attempts to resume a player whose original tab is still connected. It does not kick the original player out.
+- Likewise, a second host tab cannot replace a live host. Close the original host tab before recovering it.
+- The host page has a collapsible **Host recovery key / Clave de recuperación** section. Save that secret somewhere private before a game. Do not expand it while projecting the page on a shared TV. It is distinct from the public six-digit room code.
+- If the host tab closes or its connection drops, its room remains available for **120 seconds** by default. A quick refresh can reconnect automatically. Alternatively, reopen `/host.html` and use **Recover an existing room / Recuperar sala**, entering the six-digit room code and the private recovery key. This will work only when the original host is offline, and rotates its active session token.
+- The grace period can be configured via `HOST_DISCONNECT_GRACE_MS` (milliseconds; default 120000). If you previously configured this variable on Render as `4000`, remove it or change it to `120000` to get two minutes.
+- The room and recovery key live in server memory. A Render restart, server redeploy, or expired recovery window will destroy that room, and a new room must be created. Persistent word history is separate.
+- To simulate a duplicated tab, duplicate a connected player tab and confirm the new tab shows an error without disrupting the original, or duplicate a connected host tab and confirm control is denied. To test recovery, close the host tab and enter its saved recovery key on a fresh host tab within two minutes.

@@ -1,5 +1,5 @@
 const socket=io();const $=id=>document.getElementById(id);const t=s=>I18N.t(s);
-let roomCode=sessionStorage.getItem('imposter-host-code'),hostToken=sessionStorage.getItem('imposter-host-token'),state=null,networkUrl='',pending=false,hostReady=false;
+let roomCode=sessionStorage.getItem('imposter-host-code'),hostToken=sessionStorage.getItem('imposter-host-token'),recoveryKey=sessionStorage.getItem('imposter-host-recovery-key'),state=null,networkUrl='',pending=false,hostReady=false;
 const safe=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function word(w){return typeof w==='object'?(w[I18N.lang]||w.en):w||'';}
 function error(s){$('error').textContent=s||'';}
@@ -16,7 +16,7 @@ function send(ev){
 }
 function base(){return $('baseUrl').value.trim().replace(/\/$/,'')||location.origin;}
 function updateQR(){if(!roomCode)return;const link=base()+'/player.html?room='+roomCode;$('joinLink').href=link;$('joinLink').textContent=link;$('qr').src='/api/qr?url='+encodeURIComponent(link);}
-function show(){$('intro').classList.add('hidden');$('game').classList.remove('hidden');$('code').textContent=roomCode;updateQR();}
+function show(){if($('recoveryDisplay'))$('recoveryDisplay').textContent=recoveryKey||'Unavailable';$('intro').classList.add('hidden');$('game').classList.remove('hidden');$('code').textContent=roomCode;updateQR();}
 async function getNetwork(){try{const r=await fetch('/api/network');const j=await r.json();networkUrl=j.urls[0]||'';if(networkUrl&&['localhost','127.0.0.1'].includes(location.hostname)){$('baseUrl').value=networkUrl;updateQR();}}catch{}}
 function render(s){if(!s||!roomCode||s.code!==roomCode)return;state=s;hostReady=true;show();error('');$('phase').textContent=t(s.phase.toUpperCase());$('round').textContent=t('ROUND')+' '+s.round;$('count').textContent=`(${s.onlineCount??s.players.filter(p=>p.online).length} ${t('connected')} / ${s.players.length} ${t('registered')})`;
  $('players').innerHTML=s.players.map(p=>`<div class="player ${p.online?'':'off'}"><span>${safe(p.name)}</span><span>${!p.online?t('offline'):s.phase!=='lobby'&&!p.active?t('spectator'):s.phase==='voting'?(p.hasVoted?'✓ '+t('voted'):'…'):'●'}</span></div>`).join('');$('noPlayers').classList.toggle('hidden',s.players.length!==0);
@@ -31,28 +31,40 @@ function render(s){if(!s||!roomCode||s.code!==roomCode)return;state=s;hostReady=
  const rows=s.players.map(p=>({name:p.name,v:r.tally[p.id]||0})).sort((a,b)=>b.v-a.v);
  $('result').innerHTML=`<div class="result">${safe(r.imposterName)} ${t('was the Imposter!')}</div><div class="word">${safe(word(r.word))}</div><div class="winner ${r.correct?'':'loser'}">${t(r.correct?'Players caught the Imposter!':'Imposter escaped!')}</div><h3>${t('votes')}</h3>${rows.map(p=>`<div class="row between step"><span>${safe(p.name)}</span><b>${p.v}</b></div>`).join('')}<p class="muted mini">${t(r.unique?'Highest vote-getter decides the outcome.':'No unique top vote-getter (tie or no votes), so the Imposter escapes.')}</p>`;}
 }
-function forgetRoom(message){hostReady=false;roomCode=null;hostToken=null;state=null;sessionStorage.removeItem('imposter-host-code');sessionStorage.removeItem('imposter-host-token');$('game').classList.add('hidden');$('intro').classList.remove('hidden');$('introError').textContent=message||'Room unavailable.';}
+function forgetRoom(message){hostReady=false;roomCode=null;hostToken=null;recoveryKey=null;state=null;sessionStorage.removeItem('imposter-host-recovery-key');sessionStorage.removeItem('imposter-host-code');sessionStorage.removeItem('imposter-host-token');$('game').classList.add('hidden');$('intro').classList.remove('hidden');$('introError').textContent=message||'Room unavailable.';}
 function resumeHost(){
  if(!socket.connected||!roomCode||!hostToken)return;
  hostReady=false;
  $('connection').textContent='● Synchronizing room '+roomCode+'…';
  socket.timeout(10000).emit('host:resume',{code:roomCode,hostToken},(err,r)=>{
    if(err){$('connection').textContent='● Server did not respond. Retry by refreshing this page.';return;}
-   if(r?.ok&&r.state){render(r.state);$('connection').textContent='● '+t('Connected')+' · Room '+roomCode;}
-   else forgetRoom(r?.error||'Room unavailable.');
+   if(r?.ok&&r.state&&r.state.code===roomCode){render(r.state);$('connection').textContent='● '+t('Connected')+' · Room '+roomCode;}
+   else {hostReady=false;$('connection').textContent='● '+(r?.error||'Host unavailable');$('introError').textContent=(r?.error||'Host unavailable')+' Use Recover room if your original host is closed.';$('game').classList.add('hidden');$('intro').classList.remove('hidden');}
  });
 }
 function syncHost(){
  if(!socket.connected||!roomCode||!hostToken)return;
  socket.timeout(8000).emit('host:sync',{code:roomCode,hostToken},(err,r)=>{
    if(err){$('connection').textContent='● Room sync timed out. Check Render logs and refresh.';return;}
-   if(r?.ok&&r.state){render(r.state);$('connection').textContent='● '+t('Connected')+' · Room '+roomCode;}
+   if(r?.ok&&r.state&&r.state.code===roomCode){render(r.state);$('connection').textContent='● '+t('Connected')+' · Room '+roomCode;}
    else {hostReady=false;$('connection').textContent='● '+(r?.error||'Host session unavailable');error(r?.error||'Host session unavailable');}
  });
 }
 socket.on('connect',()=>{hostReady=false;$('connection').textContent='● '+t('Connected');if(roomCode&&hostToken)resumeHost();});
+socket.on('room:closed',r=>{if(r?.code===roomCode)forgetRoom(r.message||'This room has ended.');});
 socket.on('disconnect',()=>{hostReady=false;$('connection').textContent='● '+t('Reconnecting...');if(state)render(state);});socket.on('room:state',render);
-$('create').onclick=()=>socket.emit('host:create',{},r=>{if(!r?.ok){$('introError').textContent=r?.error||'Could not create room.';return;}roomCode=r.code;hostToken=r.hostToken;sessionStorage.setItem('imposter-host-code',roomCode);sessionStorage.setItem('imposter-host-token',hostToken);if(r.state){render(r.state);$('connection').textContent='● '+t('Connected')+' · Room '+roomCode;}else{show();syncHost();}});
+$('create').onclick=()=>socket.emit('host:create',{},r=>{if(!r?.ok){$('introError').textContent=r?.error||'Could not create room.';return;}roomCode=r.code;hostToken=r.hostToken;recoveryKey=r.recoveryKey;sessionStorage.setItem('imposter-host-recovery-key',recoveryKey);sessionStorage.setItem('imposter-host-code',roomCode);sessionStorage.setItem('imposter-host-token',hostToken);if(r.state){render(r.state);$('connection').textContent='● '+t('Connected')+' · Room '+roomCode;}else{show();syncHost();}});
+$('recoverBtn').onclick=()=>{
+ const code=$('recoverCode').value.trim(),key=$('recoverKey').value.trim();
+ if(!socket.connected){$('introError').textContent='Not connected to the server.';return;}
+ $('introError').textContent='Recovering…';
+ socket.timeout(10000).emit('host:recover',{code,recoveryKey:key},(err,r)=>{
+  if(err||!r?.ok){$('introError').textContent=err?'Recovery timed out. Try again.':r?.error||'Recovery failed.';return;}
+  roomCode=r.code;hostToken=r.hostToken;recoveryKey=r.recoveryKey;
+  sessionStorage.setItem('imposter-host-code',roomCode);sessionStorage.setItem('imposter-host-token',hostToken);sessionStorage.setItem('imposter-host-recovery-key',recoveryKey);
+  $('introError').textContent='';render(r.state);$('connection').textContent='● Recovered · Room '+roomCode;
+ });
+};
 $('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('joinLink').href);$('copy').textContent=t('Copied!');setTimeout(()=>$('copy').textContent=t('Copy join link'),1400);}catch{error('Select and copy the join URL above.');}};
 $('useNetwork').onclick=()=>{if(networkUrl){$('baseUrl').value=networkUrl;updateQR();}else error('No local IPv4 address found. Enter the host LAN address manually.');};
 $('baseUrl').addEventListener('input',updateQR);$('reset').onclick=()=>send('host:reset');

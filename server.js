@@ -11,16 +11,40 @@ const server = http.createServer(app);
 const io = new Server(server);
 const rooms = new Map();
 const PORT = process.env.PORT || 3000;
+// Allow quick refreshes/temporary network drops without leaving an abandoned room online.
+const HOST_DISCONNECT_GRACE_MS = Math.max(1000, Number(process.env.HOST_DISCONNECT_GRACE_MS) || 120000);
 const { initialize, nextWord, stats } = require('./word-store');
 const rand = (n) => crypto.randomInt(n);
 const token = () => crypto.randomBytes(24).toString('hex');
 function roomCode() { let c; do { c = crypto.randomInt(100000,999999).toString(); } while(rooms.has(c)); return c; }
 function publicState(room) {
   const players = [...room.players.values()].map(p=>({id:p.id,name:p.name,online:!!p.socketId,active:room.participants.has(p.id),hasVoted:room.votes.has(p.id)}));
-  return { code:room.code,phase:room.phase,round:room.round,players,onlineCount:players.filter(p=>p.online).length,voteCount:room.votes.size,eligibleCount:room.participants.size,
+  return { code:room.code,phase:room.phase,round:room.round,players,onlineCount:players.filter(p=>p.online).length,voteCount:room.votes.size,eligibleCount:room.participants.size,hostOnline:!!(room.hostSocket&&io.sockets.sockets.has(room.hostSocket)),
     result:room.phase==='results' ? room.result : null, wordStats:stats() };
 }
 function broadcast(room) { io.to('room:'+room.code).emit('room:state',publicState(room)); }
+function closeRoom(room, reason='The host left. This room has ended.') {
+  if (rooms.get(room.code)!==room) return;
+  if (room.closeTimer) { clearTimeout(room.closeTimer); room.closeTimer=null; }
+  // Notify players, including other tabs on the same machine, before removing the room.
+  io.to('room:'+room.code).emit('room:closed',{code:room.code,message:reason});
+  rooms.delete(room.code);
+  for (const p of room.players.values()) {
+    const sock=p.socketId&&io.sockets.sockets.get(p.socketId);
+    if(sock){sock.leave('room:'+room.code);sock.data.room=null;sock.data.playerId=null;}
+  }
+  const host=room.hostSocket&&io.sockets.sockets.get(room.hostSocket);
+  if(host){host.leave('room:'+room.code);host.data.room=null;host.data.hostToken=null;}
+}
+function scheduleHostClosure(room, socketId) {
+  if(room.hostSocket!==socketId) return;
+  if(room.closeTimer) clearTimeout(room.closeTimer);
+  room.closeTimer=setTimeout(()=>{
+    room.closeTimer=null;
+    if(room.hostSocket===socketId) closeRoom(room,'Host recovery period expired. This room has ended.');
+  },HOST_DISCONNECT_GRACE_MS);
+  room.closeTimer.unref?.();
+}
 function reply(ack, o) { if(typeof ack==='function') ack(o); }
 function fail(ack,msg) { reply(ack,{ok:false,error:msg}); }
 function getPlayer(socket,room) { const p=room?.players.get(socket.data.playerId); return p?.socketId===socket.id ? p : null; }
@@ -49,19 +73,36 @@ app.get('/api/qr',async(req,res)=>{
 io.on('connection',socket=>{
   socket.on('host:create',(_data,ack)=>{
     if(socket.data.room) return fail(ack,'This tab is already associated with a game. Open another tab to create a new room.');
-    const code=roomCode(), hostToken=token();
-    const room={code,hostToken,hostSocket:socket.id,players:new Map(),phase:'lobby',round:0,
-      word:null,imposterId:null,participants:new Set(),votes:new Map(),result:null,starting:false};
+    const code=roomCode(), hostToken=token(), recoveryKey=token();
+    const room={code,hostToken,recoveryKey,hostSocket:socket.id,players:new Map(),phase:'lobby',round:0,
+      word:null,imposterId:null,participants:new Set(),votes:new Map(),result:null,starting:false,closeTimer:null};
     rooms.set(code,room); socket.data.room=code;socket.data.hostToken=hostToken;
     socket.join('room:'+code);
-    reply(ack,{ok:true,code,hostToken,state:publicState(room)});broadcast(room);
+    reply(ack,{ok:true,code,hostToken,recoveryKey,state:publicState(room)});broadcast(room);
   });
+  // An existing live host tab owns the room. A duplicated tab cannot seize it.
   socket.on('host:resume',({code,hostToken}={},ack)=>{
     const room=rooms.get(String(code||''));
-    if(!room||room.hostToken!==hostToken) return fail(ack,'Host session expired. Create a new room.');
-    if(socket.data.room && socket.data.room!==room.code) socket.leave('room:'+socket.data.room);
+    if(!room||room.hostToken!==hostToken) return fail(ack,'Host session expired. Use the recovery option or create a room.');
+    if(socket.data.room && socket.data.room!==room.code) return fail(ack,'This tab already belongs to another room.');
+    const active=room.hostSocket&&io.sockets.sockets.get(room.hostSocket);
+    if(active&&active.id!==socket.id) return fail(ack,'Another host tab is currently active. This tab cannot take control.');
+    if(room.closeTimer){clearTimeout(room.closeTimer);room.closeTimer=null;}
     socket.data.room=room.code;socket.data.hostToken=hostToken;room.hostSocket=socket.id;
     socket.join('room:'+room.code);reply(ack,{ok:true,state:publicState(room)});broadcast(room);
+  });
+  // Explicit recovery for a closed/lost host tab, but never while the original host is online.
+  socket.on('host:recover',({code,recoveryKey}={},ack)=>{
+    const room=rooms.get(String(code||''));
+    if(!room||!recoveryKey||room.recoveryKey!==recoveryKey) return fail(ack,'Invalid room or recovery key.');
+    if(socket.data.room && socket.data.room!==room.code) return fail(ack,'This tab already belongs to another room.');
+    if(room.hostSocket&&io.sockets.sockets.has(room.hostSocket)) return fail(ack,'The original host is still connected. Recovery is not allowed.');
+    if(room.closeTimer){clearTimeout(room.closeTimer);room.closeTimer=null;}
+    room.hostToken=token();room.hostSocket=socket.id;
+    socket.data.room=room.code;socket.data.hostToken=room.hostToken;
+    socket.join('room:'+room.code);
+    reply(ack,{ok:true,code:room.code,hostToken:room.hostToken,recoveryKey:room.recoveryKey,state:publicState(room)});
+    broadcast(room);
   });
   socket.on('host:sync',({code,hostToken}={},ack)=>{
     const room=rooms.get(String(code||''));
@@ -84,7 +125,7 @@ io.on('connection',socket=>{
       p={id:token().slice(0,12),token:token(),name,socketId:null};room.players.set(p.id,p);
     }
     if(socket.data.playerId && (socket.data.room!==room.code || socket.data.playerId!==p.id)) return fail(ack,'This tab has already joined a player. Open another tab to switch players.');
-    if(p.socketId && p.socketId!==socket.id) io.sockets.sockets.get(p.socketId)?.disconnect(true);
+    if(p.socketId && p.socketId!==socket.id && io.sockets.sockets.has(p.socketId)) return fail(ack,'This player is already active in another tab. Close that tab first, or join with a different name.');
     p.socketId=socket.id;socket.data.room=room.code;socket.data.playerId=p.id;
     socket.join('room:'+room.code);
     reply(ack,{ok:true,id:p.id,playerToken:p.token,name:p.name,code:room.code});
@@ -145,7 +186,9 @@ io.on('connection',socket=>{
     const room=rooms.get(socket.data.room);if(!room)return;
     const p=getPlayer(socket,room);
     if(p){p.socketId=null;broadcast(room);}
-    // Host can reload or reconnect; keep the room in memory until server restart.
+    // If the host tab closes, end its room after a short refresh/reconnect grace period.
+    scheduleHostClosure(room,socket.id);
+    if(room.hostSocket===socket.id) broadcast(room);
   });
 });
 initialize().then(()=>server.listen(PORT,'0.0.0.0',()=>{
