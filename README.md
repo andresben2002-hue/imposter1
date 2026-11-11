@@ -76,3 +76,8 @@ The game requires **three connected player devices**, not simply three names lis
 If the host screen says `Reconnecting`, reload it after the server comes back and wait until all three phones appear as connected. If the server restarted on Render, the old room is gone; create a new room and have everyone join again. If Start Round displays a word-storage error, inspect Render logs and confirm the storage directory or PostgreSQL connection is writable. The server's word-history write must succeed before it can begin a round.
 
 For a new deployment, push these changed files to your existing GitHub repository (`server.js`, `public/host.js`, `public/i18n.js`, and tests), then wait for Render to report a successful redeploy. Refresh the host and all player pages and create a new room before testing.
+
+
+### Host button troubleshooting (2.1.1)
+
+The host now initializes from the create/resume acknowledgment as well as room broadcasts. If the page says `Waiting for live room information`, check the bottom-right connection indicator, refresh with Ctrl+Shift+R, and check the browser console for page script errors. The host screen does not count as a player: start requires 3 connected player tabs/phones. After uploading to GitHub, ensure `public/host.html`, `public/host.js`, and `server.js` were all replaced and Render is Live on the latest commit.

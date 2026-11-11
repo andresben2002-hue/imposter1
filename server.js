@@ -63,6 +63,14 @@ io.on('connection',socket=>{
     socket.data.room=room.code;socket.data.hostToken=hostToken;room.hostSocket=socket.id;
     socket.join('room:'+room.code);reply(ack,{ok:true,state:publicState(room)});broadcast(room);
   });
+  socket.on('host:sync',({code,hostToken}={},ack)=>{
+    const room=rooms.get(String(code||''));
+    if(!room || room.hostToken!==hostToken) return fail(ack,'Room is no longer available. Create a new room and have players join it.');
+    // Only the current host tab may control this room. A returning tab must resume explicitly.
+    if(room.hostSocket!==socket.id) return fail(ack,'This is not the active host tab. Close other host tabs, then refresh this tab.');
+    socket.join('room:'+room.code);
+    reply(ack,{ok:true,state:publicState(room)});
+  });
   socket.on('player:join',({code,name,playerToken}={},ack)=>{
     const room=rooms.get(String(code||''));
     if(!room) return fail(ack,'Room not found. Check the code.');
