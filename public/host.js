@@ -30,10 +30,14 @@ function render(s){state=s;show();$('phase').textContent=t(s.phase.toUpperCase()
  const rows=s.players.map(p=>({name:p.name,v:r.tally[p.id]||0})).sort((a,b)=>b.v-a.v);
  $('result').innerHTML=`<div class="result">${safe(r.imposterName)} ${t('was the Imposter!')}</div><div class="word">${safe(word(r.word))}</div><div class="winner ${r.correct?'':'loser'}">${t(r.correct?'Players caught the Imposter!':'Imposter escaped!')}</div><h3>${t('votes')}</h3>${rows.map(p=>`<div class="row between step"><span>${safe(p.name)}</span><b>${p.v}</b></div>`).join('')}<p class="muted mini">${t(r.unique?'Highest vote-getter decides the outcome.':'No unique top vote-getter (tie or no votes), so the Imposter escapes.')}</p>`;}
 }
-socket.on('connect',()=>{$('connection').textContent='● '+t('Connected');if(roomCode&&hostToken)socket.emit('host:resume',{code:roomCode,hostToken},r=>{if(!r?.ok){roomCode=null;hostToken=null;sessionStorage.removeItem('imposter-host-code');sessionStorage.removeItem('imposter-host-token');state=null;$('game').classList.add('hidden');$('intro').classList.remove('hidden');$('introError').textContent=r?.error||'Room unavailable.';}});});
+socket.on('connect',()=>{$('connection').textContent='● '+t('Connected');if(roomCode&&hostToken)socket.emit('host:resume',{code:roomCode,hostToken},r=>{if(r?.ok&&r.state)render(r.state);if(!r?.ok){roomCode=null;hostToken=null;sessionStorage.removeItem('imposter-host-code');sessionStorage.removeItem('imposter-host-token');state=null;$('game').classList.add('hidden');$('intro').classList.remove('hidden');$('introError').textContent=r?.error||'Room unavailable.';}});});
 socket.on('disconnect',()=>{$('connection').textContent='● '+t('Reconnecting...');if(state)render(state);});socket.on('room:state',render);
-$('create').onclick=()=>socket.emit('host:create',{},r=>{if(!r?.ok){$('introError').textContent=r?.error||'Could not create room.';return;}roomCode=r.code;hostToken=r.hostToken;sessionStorage.setItem('imposter-host-code',roomCode);sessionStorage.setItem('imposter-host-token',hostToken);show();});
+$('create').onclick=()=>socket.emit('host:create',{},r=>{if(!r?.ok){$('introError').textContent=r?.error||'Could not create room.';return;}roomCode=r.code;hostToken=r.hostToken;sessionStorage.setItem('imposter-host-code',roomCode);sessionStorage.setItem('imposter-host-token',hostToken);if(r.state)render(r.state);else show();});
 $('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('joinLink').href);$('copy').textContent=t('Copied!');setTimeout(()=>$('copy').textContent=t('Copy join link'),1400);}catch{error('Select and copy the join URL above.');}};
 $('useNetwork').onclick=()=>{if(networkUrl){$('baseUrl').value=networkUrl;updateQR();}else error('No local IPv4 address found. Enter the host LAN address manually.');};
 $('baseUrl').addEventListener('input',updateQR);$('reset').onclick=()=>send('host:reset');
 window.addEventListener('languagechange',()=>{if(state)render(state);else $('connection').textContent='● '+t(socket.connected?'Connected':'Reconnecting...');});getNetwork();
+
+// If the room state is delayed, keep the host informed rather than leaving a disabled placeholder.
+$('primary').disabled=false;
+$('primary').onclick=()=>{if(!state){error('Waiting for room state. Refresh the page if this persists.');return;}send('host:start');};

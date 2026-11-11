@@ -54,14 +54,14 @@ io.on('connection',socket=>{
       word:null,imposterId:null,participants:new Set(),votes:new Map(),result:null,starting:false};
     rooms.set(code,room); socket.data.room=code;socket.data.hostToken=hostToken;
     socket.join('room:'+code);
-    reply(ack,{ok:true,code,hostToken});broadcast(room);
+    reply(ack,{ok:true,code,hostToken,state:publicState(room)});broadcast(room);
   });
   socket.on('host:resume',({code,hostToken}={},ack)=>{
     const room=rooms.get(String(code||''));
     if(!room||room.hostToken!==hostToken) return fail(ack,'Host session expired. Create a new room.');
     if(socket.data.room && socket.data.room!==room.code) socket.leave('room:'+socket.data.room);
     socket.data.room=room.code;socket.data.hostToken=hostToken;room.hostSocket=socket.id;
-    socket.join('room:'+room.code);reply(ack,{ok:true});broadcast(room);
+    socket.join('room:'+room.code);reply(ack,{ok:true,state:publicState(room)});broadcast(room);
   });
   socket.on('player:join',({code,name,playerToken}={},ack)=>{
     const room=rooms.get(String(code||''));
