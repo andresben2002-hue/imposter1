@@ -81,3 +81,7 @@ For a new deployment, push these changed files to your existing GitHub repositor
 ### Host button troubleshooting (2.1.1)
 
 The host now initializes from the create/resume acknowledgment as well as room broadcasts. If the page says `Waiting for live room information`, check the bottom-right connection indicator, refresh with Ctrl+Shift+R, and check the browser console for page script errors. The host screen does not count as a player: start requires 3 connected player tabs/phones. After uploading to GitHub, ensure `public/host.html`, `public/host.js`, and `server.js` were all replaced and Render is Live on the latest commit.
+
+## November 2026 host Start Round display repair
+
+The host page previously referenced `#wordStats` without including that element in `host.html`. This caused a browser JavaScript exception after rendering the player list, leaving the action section stuck at "Waiting for live room information..." and Start Round disabled even when three people were connected. The element has been added and guarded, and an automated host UI regression test (`host-ui.test.js`) checks that the full page renders and progresses through Start Round, Open Voting and Reveal Imposter. Upload ALL changed files (at least `public/host.html`, `public/host.js`, and `host-ui.test.js`) and redeploy Render. Use a hard refresh after deployment.

@@ -22,7 +22,7 @@ function render(s){if(!s||!roomCode||s.code!==roomCode)return;state=s;hostReady=
  $('players').innerHTML=s.players.map(p=>`<div class="player ${p.online?'':'off'}"><span>${safe(p.name)}</span><span>${!p.online?t('offline'):s.phase!=='lobby'&&!p.active?t('spectator'):s.phase==='voting'?(p.hasVoted?'✓ '+t('voted'):'…'):'●'}</span></div>`).join('');$('noPlayers').classList.toggle('hidden',s.players.length!==0);
  const online=s.players.filter(p=>p.online).length;
  $('votes').classList.toggle('hidden',s.phase!=='voting');$('votes').textContent=`${s.voteCount}/${s.eligibleCount} ${t('votes')}`;
- $('wordStats').textContent=`${t('New words left')}: ${s.wordStats?.remaining??'?'} / ${s.wordStats?.total??'?'} · ${t('Word cycles')}: ${s.wordStats?.cycles??0}`;
+ if($('wordStats')) $('wordStats').textContent=`${t('New words left')}: ${s.wordStats?.remaining??'?'} / ${s.wordStats?.total??'?'} · ${t('Word cycles')}: ${s.wordStats?.cycles??0}`;
  $('primary').classList.remove('hidden');$('reset').classList.add('hidden');$('result').classList.add('hidden');
  if(s.phase==='lobby'){$('actionTitle').textContent=t('Ready to begin?');$('description').textContent=t('Players join from their phones. Start when at least 3 players are connected.');$('primary').textContent=t('Start round');$('primary').disabled=pending||!socket.connected||!hostReady;$('description').textContent=online<3?`${t('Need 3 connected players to start.')} ${online}/3. ${t('The host screen does not count as a player.')} ${t('Disconnected players can rejoin with their original link.')}`:t('Players join from their phones. Start when at least 3 players are connected.');$('primary').onclick=()=>send('host:start');}
  if(s.phase==='clues'){$('actionTitle').textContent=t('Give your clues');$('description').textContent=t('Every player privately sees their role. Go around the room; each person says ONE related word. Discuss who seems suspicious, then open voting.');$('primary').textContent=t('Open voting');$('primary').disabled=pending||!socket.connected||!hostReady;$('primary').onclick=()=>send('host:vote');}
@@ -60,5 +60,4 @@ window.addEventListener('languagechange',()=>{if(state)render(state);else $('con
 
 // Periodic recovery prevents a stale UI if a room state update was missed.
 setInterval(()=>{if(roomCode&&socket.connected&&!pending)syncHost();},7000);
-$('primary').disabled=true;
-$('primary').onclick=()=>{if(!state)error('No room information received. Check the connection message and refresh the host page.');};
+// Initial disabled state is set in HTML. Do not overwrite live controls after render().
