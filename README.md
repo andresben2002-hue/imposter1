@@ -116,3 +116,12 @@ are not accidentally reused just because a different host starts a game.
 - The grace period can be configured via `HOST_DISCONNECT_GRACE_MS` (milliseconds; default 120000). If you previously configured this variable on Render as `4000`, remove it or change it to `120000` to get two minutes.
 - The room and recovery key live in server memory. A Render restart, server redeploy, or expired recovery window will destroy that room, and a new room must be created. Persistent word history is separate.
 - To simulate a duplicated tab, duplicate a connected player tab and confirm the new tab shows an error without disrupting the original, or duplicate a connected host tab and confirm control is denied. To test recovery, close the host tab and enter its saved recovery key on a fresh host tab within two minutes.
+
+
+## Player refresh/reconnect fix (v2.5)
+
+- A refreshed tab can reach the server before the old Socket.IO connection has fully expired. The server continues to reject a competing tab, but the **refreshed tab now keeps its original saved token and retries** instead of discarding its identity. It may take up to ~45–60 seconds for a stale connection to expire if the original tab disappeared without a clean disconnect.
+- If a previously deployed buggy version already erased your saved player token, that identity cannot be proved from the name alone. In the **lobby or results screen**, the host can click **Remove / Quitar** next to that *offline* entry, then the player can join again with their original name. This does not remove connected players or interrupt a live round.
+- Refreshing or resuming with the original session preserves the same player ID and role; a duplicated tab cannot take control while its original Socket.IO connection is active.
+- Update **server.js**, **public/player.js**, **public/player.html**, **public/host.js**, and **public/host.html** together, deploy the GitHub commit on Render, then hard-refresh pages and create a fresh room.
+- Verify by joining with three phones, refreshing one mid-round and immediately reconnecting, and testing that its secret word and voting eligibility remain intact. Test a disconnected stale name removal in the lobby too.

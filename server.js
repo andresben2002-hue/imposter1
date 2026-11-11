@@ -46,7 +46,7 @@ function scheduleHostClosure(room, socketId) {
   room.closeTimer.unref?.();
 }
 function reply(ack, o) { if(typeof ack==='function') ack(o); }
-function fail(ack,msg) { reply(ack,{ok:false,error:msg}); }
+function fail(ack,msg,errorCode) { reply(ack,{ok:false,error:msg,...(errorCode?{errorCode}:{})}); }
 function getPlayer(socket,room) { const p=room?.players.get(socket.data.playerId); return p?.socketId===socket.id ? p : null; }
 function hostOnly(socket, code, ack) {
   const room=rooms.get(code);
@@ -114,22 +114,31 @@ io.on('connection',socket=>{
   });
   socket.on('player:join',({code,name,playerToken}={},ack)=>{
     const room=rooms.get(String(code||''));
-    if(!room) return fail(ack,'Room not found. Check the code.');
+    if(!room) return fail(ack,'Room not found. Check the code.','ROOM_NOT_FOUND');
     name=String(name||'').trim().slice(0,22);
     if(!name) return fail(ack,'Enter a player name.');
     let p=[...room.players.values()].find(p=>p.token===playerToken);
     if(!p) {
       if(room.phase!=='lobby') return fail(ack,'This round has already started. Join next game.');
       if(room.players.size>=20) return fail(ack,'This room is full (20 players).');
-      if([...room.players.values()].some(p=>p.name.toLowerCase()===name.toLowerCase())) return fail(ack,'That name is taken.');
+      if([...room.players.values()].some(p=>p.name.toLowerCase()===name.toLowerCase())) return fail(ack,'That name is already registered. If you lost your saved session, ask the host to remove the offline player from the lobby.','NAME_TAKEN');
       p={id:token().slice(0,12),token:token(),name,socketId:null};room.players.set(p.id,p);
     }
     if(socket.data.playerId && (socket.data.room!==room.code || socket.data.playerId!==p.id)) return fail(ack,'This tab has already joined a player. Open another tab to switch players.');
-    if(p.socketId && p.socketId!==socket.id && io.sockets.sockets.has(p.socketId)) return fail(ack,'This player is already active in another tab. Close that tab first, or join with a different name.');
+    if(p.socketId && p.socketId!==socket.id && io.sockets.sockets.has(p.socketId)) return fail(ack,'Previous connection is still active. Reconnecting automatically; keep this tab open.','PLAYER_ACTIVE');
     p.socketId=socket.id;socket.data.room=room.code;socket.data.playerId=p.id;
     socket.join('room:'+room.code);
     reply(ack,{ok:true,id:p.id,playerToken:p.token,name:p.name,code:room.code});
     socket.emit('room:state',publicState(room));giveRole(socket,room,p);broadcast(room);
+  });
+  socket.on('host:remove-player',({code,id}={},ack)=>{
+    const room=hostOnly(socket,String(code||''),ack);if(!room)return;
+    if(room.phase!=='lobby'&&room.phase!=='results')return fail(ack,'Wait for the round to end before removing players.');
+    const p=room.players.get(String(id||''));
+    if(!p)return fail(ack,'Player no longer exists.');
+    if(p.socketId&&io.sockets.sockets.has(p.socketId))return fail(ack,'This player is connected. Ask them to leave first.');
+    room.players.delete(p.id);room.participants.delete(p.id);room.votes.delete(p.id);
+    reply(ack,{ok:true});broadcast(room);
   });
   socket.on('host:start',async({code}={},ack)=>{
     const room=hostOnly(socket,String(code||''),ack);if(!room)return;

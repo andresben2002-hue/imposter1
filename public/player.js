@@ -5,13 +5,53 @@ let session=null,state=null,role=null,selected=null,shown=false;
 try{session=JSON.parse(sessionStorage.getItem('imposter-player-session')||'null');}catch{}
 const safe=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function word(w){return typeof w==='object'?(w[I18N.lang]||w.en):w||'';}
-function join(resume=false){const code=resume?session?.code:$('room').value.trim(),name=resume?session?.name:$('name').value.trim(),playerToken=resume?session?.playerToken:undefined;
- socket.emit('player:join',{code,name,playerToken},r=>{
- if(!r?.ok){if(resume){session=null;sessionStorage.removeItem('imposter-player-session');$('join').classList.remove('hidden');$('play').classList.add('hidden');$('joinError').textContent=r?.error||'This session is already active in another tab.';}else $('joinError').textContent=r?.error||'Unable to join.';return;}
- // Do not reset the role after the server has already sent it on this connection.
- if(session?.code!==r.code||session?.id!==r.id){state=null;role=null;shown=false;selected=null;}
- session={code:r.code,name:r.name,playerToken:r.playerToken,id:r.id};sessionStorage.setItem('imposter-player-session',JSON.stringify(session));$('join').classList.add('hidden');$('play').classList.remove('hidden');$('welcome').textContent=`${t('Hi,')} ${session.name}`;$('joinError').textContent='';if(state)render(state);
- });}
+// On refresh the old Socket.IO connection can remain visible briefly on the server.
+// Keep the resume token and retry instead of destroying the only proof of identity.
+let resumeTimer=null, resumeAttempt=0, resumeInFlight=false;
+function cancelResume(){if(resumeTimer)clearTimeout(resumeTimer);resumeTimer=null;resumeInFlight=false;}
+function scheduleResume(){
+ if(!session||!socket.connected)return;
+ const wait=Math.min(3500,800+resumeAttempt*350);
+ resumeTimer=setTimeout(()=>{resumeTimer=null;join(true);},wait);
+}
+function join(resume=false){
+ if(resume&&(!session||!socket.connected||resumeInFlight))return;
+ const code=resume?session.code:$('room').value.trim();
+ const name=resume?session.name:$('name').value.trim();
+ const playerToken=resume?session.playerToken:undefined;
+ if(resume)resumeInFlight=true;
+ socket.timeout(10000).emit('player:join',{code,name,playerToken},(err,r)=>{
+  if(resume)resumeInFlight=false;
+  if(err){
+   $('joinError').textContent='Connection timed out. Retrying... / Conexión agotada. Reintentando...';
+   if(resume){resumeAttempt++;scheduleResume();}
+   return;
+  }
+  if(!r?.ok){
+   // A refresh can create the new connection before the old one times out.
+   // A duplicated tab is also denied; it must never steal the active session.
+   if(resume){
+    $('joinError').textContent=r?.error||'Reconnecting...';
+    if(r?.errorCode==='PLAYER_ACTIVE'){
+     resumeAttempt++;scheduleResume();
+     $('connection').textContent='● Waiting for previous connection to close / Esperando desconexión anterior';
+    } else if(r?.errorCode==='ROOM_NOT_FOUND'){
+     cancelResume();session=null;sessionStorage.removeItem('imposter-player-session');
+     $('join').classList.remove('hidden');$('play').classList.add('hidden');
+    } else {resumeAttempt++;scheduleResume();}
+   }else $('joinError').textContent=r?.error||'Unable to join.';
+   return;
+  }
+  cancelResume();resumeAttempt=0;
+  if(session?.code!==r.code||session?.id!==r.id){state=null;role=null;shown=false;selected=null;}
+  session={code:r.code,name:r.name,playerToken:r.playerToken,id:r.id};
+  sessionStorage.setItem('imposter-player-session',JSON.stringify(session));
+  $('join').classList.add('hidden');$('play').classList.remove('hidden');
+  $('welcome').textContent=`${t('Hi,')} ${session.name}`;
+  $('joinError').textContent='';$('connection').textContent='● '+t('Connected');
+  if(state)render(state);
+ });
+}
 function render(s){if(!session||s.code!==session.code)return;let prevRound=state?.round;state=s;
  if(prevRound!==undefined&&prevRound!==s.round){if(role?.round!==s.round)role=null;shown=false;selected=null;$('voteError').textContent='';}
  const me=s.players.find(p=>p.id===session.id),playing=!!me?.active;
@@ -34,18 +74,18 @@ function updateRole(){if(!state||!['clues','voting'].includes(state.phase))retur
  $('secretCard').classList.toggle('imposter',shown&&role.imposter);$('secretCard').classList.toggle('civilian',shown&&!role.imposter);
  $('roleLabel').textContent=t(role.imposter?'YOU ARE THE IMPOSTER':'SECRET WORD');$('word').textContent=role.imposter?t('IMPOSTER'):word(role.word);
  $('roleText').textContent=t(role.imposter?'Blend in. Listen closely. Pretend you know the word.':'Give one word related to the secret. Do not say the word itself.');}
-$('joinBtn').onclick=()=>join(false);$('name').addEventListener('keydown',e=>{if(e.key==='Enter')join(false)});
+$('joinBtn').onclick=()=>{if(session){cancelResume();join(true);}else join(false);};$('name').addEventListener('keydown',e=>{if(e.key==='Enter')join(false)});
 $('reveal').onclick=()=>{shown=true;updateRole()};$('hide').onclick=()=>{shown=false;updateRole()};
 $('voteBtn').onclick=()=>{if(!selected||$('voteBtn').disabled)return;$('voteBtn').disabled=true;socket.emit('player:vote',{id:selected},r=>{$('voteError').textContent=r?.ok?t('Vote recorded.'):r?.error||'Vote failed.';if(!r?.ok)$('voteBtn').disabled=false;});};
 socket.on('room:closed',r=>{
  if(!session || r?.code!==session.code)return;
- session=null;state=null;role=null;selected=null;shown=false;
+ cancelResume();session=null;state=null;role=null;selected=null;shown=false;
  sessionStorage.removeItem('imposter-player-session');
  $('play').classList.add('hidden');$('join').classList.remove('hidden');
  $('joinError').textContent=r.message||'The host left. This room has ended. Join a new room.';
  $('room').value='';
 });
 socket.on('player:role',r=>{if(role?.round===r.round&&shown)return;role=r;updateRole()});socket.on('room:state',render);
-socket.on('connect',()=>{$('connection').textContent='● '+t('Connected');if(session&&(!codeFromUrl||codeFromUrl===session.code))join(true);});socket.on('disconnect',()=>{$('connection').textContent='● '+t('Reconnecting...');});
+socket.on('connect',()=>{$('connection').textContent='● '+t('Connected');if(session&&(!codeFromUrl||codeFromUrl===session.code)){cancelResume();join(true);}});socket.on('disconnect',()=>{cancelResume();$('connection').textContent='● '+t('Reconnecting...');});
 window.addEventListener('languagechange',()=>{if(state)render(state);if(session)$('welcome').textContent=`${t('Hi,')} ${session.name}`;});
 if(codeFromUrl&&session&&session.code!==codeFromUrl){session=null;sessionStorage.removeItem('imposter-player-session');}

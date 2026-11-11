@@ -7,7 +7,7 @@ const root=path.join(__dirname,'public');
 function createHostDOM(){
  const html=fs.readFileSync(path.join(root,'host.html'),'utf8');
  const names=[...html.matchAll(/\bid="([^"]+)"/g)].map(m=>m[1]);
- const nodes=new Map(names.map(id=>[id,{textContent:'',value:'',disabled:false,href:'',src:'',onclick:null,style:{},classList:{add(){},remove(){},toggle(){}},addEventListener(){}}]));
+ const nodes=new Map(names.map(id=>[id,{textContent:'',value:'',disabled:false,href:'',src:'',onclick:null,style:{},classList:{add(){},remove(){},toggle(){}},addEventListener(){},querySelectorAll(){return [];}}]));
  const handlers={};const store=new Map();
  const socket={connected:true,on(event,fn){handlers[event]=fn;},emit(event,payload,ack){if(event==='host:create')ack({ok:true,code:'123456',hostToken:'token',state:{code:'123456',phase:'lobby',round:0,players:[],onlineCount:0,voteCount:0,eligibleCount:0,wordStats:{remaining:270,total:270,cycles:0}}});else if(event==='host:start')ack({ok:true});},timeout(){return this;}};
  const sessionStorage={getItem:k=>store.get(k)||null,setItem:(k,v)=>store.set(k,v),removeItem:k=>store.delete(k)};

@@ -99,7 +99,7 @@ test('duplicated player tab cannot steal live session, but offline reconnect suc
  const original=connect(),p=await original.call('player:join',{code:c.code,name:'A'});
  const duplicated=connect();
  const denied=await duplicated.call('player:join',{code:c.code,name:'A',playerToken:p.playerToken});
- assert.equal(denied.ok,false);assert.match(denied.error,/already active/);
+ assert.equal(denied.ok,false);assert.equal(denied.errorCode,'PLAYER_ACTIVE');
  assert.equal((await original.call('player:join',{code:c.code,name:'A',playerToken:p.playerToken})).ok,true);
  original.disconnect();
  const resumed=await duplicated.call('player:join',{code:c.code,name:'A',playerToken:p.playerToken});
@@ -121,4 +121,40 @@ test('explicit recovery needs secret and offline host, rotates control token',as
 test('host recovery window defaults to two minutes',()=>{
  const source=fs.readFileSync(__dirname+'/server.js','utf8');
  assert.match(source,/HOST_DISCONNECT_GRACE_MS\) \|\| 120000/);
+});
+
+test('refresh race: same token blocked while original online; succeeds after disconnect; name reserved safely',async()=>{
+ const {connect}=setup(),host=connect(),created=await host.call('host:create');
+ const old=connect(),joined=await old.call('player:join',{code:created.code,name:'RefreshMe'});
+ assert.equal(joined.ok,true);
+ const refreshed=connect();
+ const early=await refreshed.call('player:join',{code:created.code,name:'RefreshMe',playerToken:joined.playerToken});
+ assert.equal(early.ok,false);assert.equal(early.errorCode,'PLAYER_ACTIVE');
+ const withoutToken=connect();
+ const denied=await withoutToken.call('player:join',{code:created.code,name:'RefreshMe'});
+ assert.equal(denied.errorCode,'NAME_TAKEN');
+ old.disconnect();
+ const resumed=await refreshed.call('player:join',{code:created.code,name:'RefreshMe',playerToken:joined.playerToken});
+ assert.equal(resumed.ok,true);assert.equal(resumed.id,joined.id);
+ assert.equal(host.events.filter(e=>e.e==='room:state').at(-1).v.onlineCount,1);
+});
+
+test('offline abandoned name can be released by host in lobby, not by strangers',async()=>{
+ const {connect}=setup(),host=connect(),created=await host.call('host:create');
+ const player=connect(),j=await player.call('player:join',{code:created.code,name:'Sam'});
+ assert.equal(j.ok,true);
+ const outsider=connect();
+ assert.equal((await outsider.call('host:remove-player',{code:created.code,id:j.id})).ok,false);
+ assert.equal((await host.call('host:remove-player',{code:created.code,id:j.id})).ok,false);
+ player.disconnect();
+ assert.equal((await host.call('host:remove-player',{code:created.code,id:j.id})).ok,true);
+ assert.equal((await outsider.call('player:join',{code:created.code,name:'Sam'})).ok,true);
+});
+
+test('client never clears its reconnect token on active-session rejection',()=>{
+ const source=fs.readFileSync(__dirname+'/public/player.js','utf8');
+ assert.match(source,/errorCode==='PLAYER_ACTIVE'/);
+ assert.match(source,/scheduleResume\(\)/);
+ assert.match(source,/sessionStorage\.setItem\('imposter-player-session'/);
+ assert.match(source,/cancelResume\(\);session=null;sessionStorage\.removeItem/);
 });

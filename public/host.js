@@ -19,7 +19,12 @@ function updateQR(){if(!roomCode)return;const link=base()+'/player.html?room='+r
 function show(){if($('recoveryDisplay'))$('recoveryDisplay').textContent=recoveryKey||'Unavailable';$('intro').classList.add('hidden');$('game').classList.remove('hidden');$('code').textContent=roomCode;updateQR();}
 async function getNetwork(){try{const r=await fetch('/api/network');const j=await r.json();networkUrl=j.urls[0]||'';if(networkUrl&&['localhost','127.0.0.1'].includes(location.hostname)){$('baseUrl').value=networkUrl;updateQR();}}catch{}}
 function render(s){if(!s||!roomCode||s.code!==roomCode)return;state=s;hostReady=true;show();error('');$('phase').textContent=t(s.phase.toUpperCase());$('round').textContent=t('ROUND')+' '+s.round;$('count').textContent=`(${s.onlineCount??s.players.filter(p=>p.online).length} ${t('connected')} / ${s.players.length} ${t('registered')})`;
- $('players').innerHTML=s.players.map(p=>`<div class="player ${p.online?'':'off'}"><span>${safe(p.name)}</span><span>${!p.online?t('offline'):s.phase!=='lobby'&&!p.active?t('spectator'):s.phase==='voting'?(p.hasVoted?'✓ '+t('voted'):'…'):'●'}</span></div>`).join('');$('noPlayers').classList.toggle('hidden',s.players.length!==0);
+ $('players').innerHTML=s.players.map(p=>`<div class="player ${p.online?'':'off'}"><span>${safe(p.name)}</span><span>${!p.online?t('offline'):s.phase!=='lobby'&&!p.active?t('spectator'):s.phase==='voting'?(p.hasVoted?'✓ '+t('voted'):'…'):'●'}${!p.online&&['lobby','results'].includes(s.phase)?` <button class="secondary remove-offline" data-id="${safe(p.id)}" title="Remove disconnected player / Quitar jugador desconectado" style="padding:5px 8px;font-size:12px">Remove / Quitar</button>`:''}</span></div>`).join('');
+ $('players').querySelectorAll('.remove-offline').forEach(btn=>btn.onclick=()=>{
+  if(!socket.connected||!hostReady){error('Server disconnected.');return;}
+  socket.emit('host:remove-player',{code:roomCode,id:btn.dataset.id},r=>{if(!r?.ok)error(r?.error||'Could not remove player.');});
+ });
+ $('noPlayers').classList.toggle('hidden',s.players.length!==0);
  const online=s.players.filter(p=>p.online).length;
  $('votes').classList.toggle('hidden',s.phase!=='voting');$('votes').textContent=`${s.voteCount}/${s.eligibleCount} ${t('votes')}`;
  if($('wordStats')) $('wordStats').textContent=`${t('New words left')}: ${s.wordStats?.remaining??'?'} / ${s.wordStats?.total??'?'} · ${t('Word cycles')}: ${s.wordStats?.cycles??0}`;
