@@ -118,8 +118,10 @@ io.on('connection',socket=>{
     name=String(name||'').trim().slice(0,22);
     if(!name) return fail(ack,'Enter a player name.');
     let p=[...room.players.values()].find(p=>p.token===playerToken);
+    const isNewPlayer=!p;
     if(!p) {
-      if(room.phase!=='lobby') return fail(ack,'This round has already started. Join next game.');
+      // Late arrivals are ordinary players and can never become the Imposter in the current round.
+      if(!['lobby','clues','voting'].includes(room.phase)) return fail(ack,'Wait for the next round to join.');
       if(room.players.size>=20) return fail(ack,'This room is full (20 players).');
       if([...room.players.values()].some(p=>p.name.toLowerCase()===name.toLowerCase())) return fail(ack,'That name is already registered. If you lost your saved session, ask the host to remove the offline player from the lobby.','NAME_TAKEN');
       p={id:token().slice(0,12),token:token(),name,socketId:null};room.players.set(p.id,p);
@@ -127,6 +129,9 @@ io.on('connection',socket=>{
     if(socket.data.playerId && (socket.data.room!==room.code || socket.data.playerId!==p.id)) return fail(ack,'This tab has already joined a player. Open another tab to switch players.');
     if(p.socketId && p.socketId!==socket.id && io.sockets.sockets.has(p.socketId)) return fail(ack,'Previous connection is still active. Reconnecting automatically; keep this tab open.','PLAYER_ACTIVE');
     p.socketId=socket.id;socket.data.room=room.code;socket.data.playerId=p.id;
+    // Assign a late arrival to the current round without changing the existing Imposter.
+    // This also allows late players to vote if voting is already underway.
+    if(isNewPlayer && (room.phase==='clues'||room.phase==='voting')) room.participants.add(p.id);
     socket.join('room:'+room.code);
     reply(ack,{ok:true,id:p.id,playerToken:p.token,name:p.name,code:room.code});
     socket.emit('room:state',publicState(room));giveRole(socket,room,p);broadcast(room);
@@ -140,26 +145,39 @@ io.on('connection',socket=>{
     room.players.delete(p.id);room.participants.delete(p.id);room.votes.delete(p.id);
     reply(ack,{ok:true});broadcast(room);
   });
-  socket.on('host:start',async({code}={},ack)=>{
+  // start: new round and randomly choose an imposter.
+  // reroll: new word, keep the same imposter, return to clues and erase all votes.
+  // restart: new word AND freshly choose the imposter, return to clues.
+  async function beginRound(socket, code, ack, mode) {
     const room=hostOnly(socket,String(code||''),ack);if(!room)return;
-    if(!['lobby','results'].includes(room.phase)||room.starting) return fail(ack,'Finish this round first.');
-    const participants=[...room.players.values()].filter(p=>p.socketId);
-    if(participants.length<3) return fail(ack,`Only ${participants.length} of ${room.players.size} registered players are connected. At least 3 connected player phones are required. The host screen does not count as a player; join from another phone if you want to play.`);
+    const isNew=mode==='start';
+    if(room.starting)return fail(ack,'A round update is already in progress.');
+    if(isNew && !['lobby','results'].includes(room.phase))return fail(ack,'Finish this round first, or use reroll/restart.');
+    if(!isNew && !['clues','voting'].includes(room.phase))return fail(ack,'You can only reroll or restart during clues or voting.');
+    const connected=[...room.players.values()].filter(p=>p.socketId && io.sockets.sockets.has(p.socketId));
+    if(connected.length<3)return fail(ack,`Only ${connected.length} of ${room.players.size} registered players are connected. At least 3 connected player phones are required.`);
     room.starting=true;
     try {
-      const word=await nextWord();
-      // The original host might have refreshed while waiting for storage.
-      if(room.hostSocket!==socket.id) return fail(ack,'Host session changed. Refresh the host page.');
-      const currentParticipants=participants.filter(p=>p.socketId && io.sockets.sockets.has(p.socketId));
-      if(currentParticipants.length<3) return fail(ack,'A player disconnected while starting the round. Reconnect at least 3 players and try again.');
-      room.round++;room.phase='clues';room.votes=new Map();room.result=null;
-      room.participants=new Set(currentParticipants.map(p=>p.id));room.word=word;
-      room.imposterId=currentParticipants[rand(currentParticipants.length)].id;
-      for(const p of currentParticipants){const s=io.sockets.sockets.get(p.socketId);if(s)giveRole(s,room,p);}
+      const next=await nextWord();
+      if(rooms.get(room.code)!==room || room.hostSocket!==socket.id)return fail(ack,'Host session changed. Refresh the host page.');
+      const live=connected.filter(p=>p.socketId && io.sockets.sockets.has(p.socketId));
+      if(live.length<3)return fail(ack,'A player disconnected. Reconnect at least 3 players and try again.');
+      // The active group includes players who joined while the new word was being loaded.
+      const allLive=[...room.players.values()].filter(p=>p.socketId&&io.sockets.sockets.has(p.socketId));
+      const previousImposter=room.imposterId;
+      const keepImposter=mode==='reroll' && allLive.some(p=>p.id===previousImposter);
+      room.round++;
+      room.phase='clues';room.votes=new Map();room.result=null;
+      room.participants=new Set(allLive.map(p=>p.id));room.word=next;
+      room.imposterId=keepImposter?previousImposter:allLive[rand(allLive.length)].id;
+      for(const p of allLive){const connectedSocket=io.sockets.sockets.get(p.socketId);if(connectedSocket)giveRole(connectedSocket,room,p);}
       broadcast(room);reply(ack,{ok:true});
-    } catch(e){ console.error('Could not save word history:',e);fail(ack,'Could not save word history. Check server storage.'); }
-    finally {room.starting=false;}
-  });
+    }catch(e){console.error('Could not save word history:',e);fail(ack,'Could not save word history. Check server storage.');}
+    finally{room.starting=false;}
+  }
+  socket.on('host:start',({code}={},ack)=>beginRound(socket,code,ack,'start'));
+  socket.on('host:reroll',({code}={},ack)=>beginRound(socket,code,ack,'reroll'));
+  socket.on('host:restart',({code}={},ack)=>beginRound(socket,code,ack,'restart'));
   socket.on('host:vote',({code}={},ack)=>{
     const room=hostOnly(socket,String(code||''),ack);if(!room)return;
     if(room.phase!=='clues') return fail(ack,'Not in clue phase.');

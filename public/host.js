@@ -7,7 +7,7 @@ function send(ev){
  if(pending)return;
  if(!hostReady || !state){error('Host room is not synchronized. Check the host connection message, then refresh.');return;}
  if(!socket.connected){error(t('The server is disconnected. Wait for reconnection and try again.'));return;}
- pending=true;error('');$('primary').disabled=true;$('reset').disabled=true;
+ pending=true;error('');$('primary').disabled=true;$('reset').disabled=true;$('reroll').disabled=true;$('restart').disabled=true;
  socket.timeout(12000).emit(ev,{code:roomCode},(err,r)=>{pending=false;
  if(err)error(t('The server did not respond. Check your connection and try again.'));
  else error(r?.ok?'':r?.error||'Request failed.');
@@ -29,6 +29,8 @@ function render(s){if(!s||!roomCode||s.code!==roomCode)return;state=s;hostReady=
  $('votes').classList.toggle('hidden',s.phase!=='voting');$('votes').textContent=`${s.voteCount}/${s.eligibleCount} ${t('votes')}`;
  if($('wordStats')) $('wordStats').textContent=`${t('New words left')}: ${s.wordStats?.remaining??'?'} / ${s.wordStats?.total??'?'} · ${t('Word cycles')}: ${s.wordStats?.cycles??0}`;
  $('primary').classList.remove('hidden');$('reset').classList.add('hidden');$('result').classList.add('hidden');
+ const midround=['clues','voting'].includes(s.phase);
+ for(const id of ['reroll','restart']){$(id).classList.toggle('hidden',!midround);$(id).disabled=pending||!socket.connected||!hostReady||online<3;}
  if(s.phase==='lobby'){$('actionTitle').textContent=t('Ready to begin?');$('description').textContent=t('Players join from their phones. Start when at least 3 players are connected.');$('primary').textContent=t('Start round');$('primary').disabled=pending||!socket.connected||!hostReady;$('description').textContent=online<3?`${t('Need 3 connected players to start.')} ${online}/3. ${t('The host screen does not count as a player.')} ${t('Disconnected players can rejoin with their original link.')}`:t('Players join from their phones. Start when at least 3 players are connected.');$('primary').onclick=()=>send('host:start');}
  if(s.phase==='clues'){$('actionTitle').textContent=t('Give your clues');$('description').textContent=t('Every player privately sees their role. Go around the room; each person says ONE related word. Discuss who seems suspicious, then open voting.');$('primary').textContent=t('Open voting');$('primary').disabled=pending||!socket.connected||!hostReady;$('primary').onclick=()=>send('host:vote');}
  if(s.phase==='voting'){$('actionTitle').textContent=t('Cast your votes');$('description').textContent=t('Everyone selects the person they suspect on their phone. Once all votes are in (or whenever you are ready), reveal the answer.');$('primary').textContent=t('Reveal Imposter');$('primary').disabled=pending||!socket.connected||!hostReady;$('primary').onclick=()=>send('host:reveal');}
@@ -73,6 +75,8 @@ $('recoverBtn').onclick=()=>{
 $('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('joinLink').href);$('copy').textContent=t('Copied!');setTimeout(()=>$('copy').textContent=t('Copy join link'),1400);}catch{error('Select and copy the join URL above.');}};
 $('useNetwork').onclick=()=>{if(networkUrl){$('baseUrl').value=networkUrl;updateQR();}else error('No local IPv4 address found. Enter the host LAN address manually.');};
 $('baseUrl').addEventListener('input',updateQR);$('reset').onclick=()=>send('host:reset');
+$('reroll').onclick=()=>{if(confirm('Give everyone a NEW word, keep the SAME Imposter, and clear all votes? / ¿Nueva palabra, mismo impostor y borrar votos?'))send('host:reroll');};
+$('restart').onclick=()=>{if(confirm('Restart with a NEW word and NEW random Imposter? All votes will be cleared. / ¿Reiniciar con palabra e impostor nuevos?'))send('host:restart');};
 window.addEventListener('languagechange',()=>{if(state)render(state);else $('connection').textContent='● '+t(socket.connected?'Connected':'Reconnecting...');});getNetwork();
 
 // Periodic recovery prevents a stale UI if a room state update was missed.

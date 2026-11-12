@@ -125,3 +125,13 @@ are not accidentally reused just because a different host starts a game.
 - Refreshing or resuming with the original session preserves the same player ID and role; a duplicated tab cannot take control while its original Socket.IO connection is active.
 - Update **server.js**, **public/player.js**, **public/player.html**, **public/host.js**, and **public/host.html** together, deploy the GitHub commit on Render, then hard-refresh pages and create a fresh room.
 - Verify by joining with three phones, refreshing one mid-round and immediately reconnecting, and testing that its secret word and voting eligibility remain intact. Test a disconnected stale name removal in the lobby too.
+
+
+## Mid-round participation and host controls (v3.0)
+
+- New players may join during **Clues** or **Voting**; they are always ordinary players (never the Imposter for the current round). They immediately receive the current secret word and may vote if voting is open. Existing players and the Imposter stay unchanged. Late joining during **Results** is blocked until the lobby.
+- **New word / Nueva palabra**: keeps the current Imposter if still connected, fetches a new word from the no-repeat word store, increments the round number, resets votes, and returns everyone to Clues. If the prior Imposter disconnected, a new Imposter is selected among currently connected players.
+- **Restart round / Reiniciar ronda**: chooses a fresh word and a newly randomized Imposter from all connected players, clears votes and returns to Clues. A randomly selected new Imposter might coincidentally be the same person as before.
+- Both host actions require at least three connected players and confirmation. Role cards must be revealed again after reroll or restart. The UI keeps the host-only word hidden.
+- **Word history:** every reroll/restart consumes another unique word from the current cycle (unless the word bank has been exhausted).
+- Players joining during voting can vote immediately; if you want everyone to give a clue first, the host can use New word to start a fresh clue phase.

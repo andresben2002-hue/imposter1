@@ -158,3 +158,65 @@ test('client never clears its reconnect token on active-session rejection',()=>{
  assert.match(source,/sessionStorage\.setItem\('imposter-player-session'/);
  assert.match(source,/cancelResume\(\);session=null;sessionStorage\.removeItem/);
 });
+test('late arrivals join clues as non-imposters with bilingual role and can vote',async()=>{
+ const {connect}=setup(),host=connect(),c=await host.call('host:create'),players=[];
+ for(let i=0;i<3;i++){const s=connect();players.push({s,...await s.call('player:join',{code:c.code,name:'P'+i})});}
+ assert.equal((await host.call('host:start',{code:c.code})).ok,true);
+ const oldRoles=players.map(p=>p.s.events.find(e=>e.e==='player:role').v);
+ const late=connect(),j=await late.call('player:join',{code:c.code,name:'Late'});
+ assert.equal(j.ok,true);
+ const lateRole=late.events.find(e=>e.e==='player:role').v;
+ assert.equal(lateRole.imposter,false);
+ assert.equal(lateRole.word.en,'Beach');assert.equal(lateRole.word.es,'Playa');
+ assert.equal(oldRoles.filter(r=>r.imposter).length,1);
+ let state=host.events.filter(e=>e.e==='room:state').at(-1).v;
+ assert.equal(state.eligibleCount,4);assert.equal(state.players.find(p=>p.id===j.id).active,true);
+ assert.equal((await host.call('host:vote',{code:c.code})).ok,true);
+ assert.equal((await late.call('player:vote',{id:players[0].id})).ok,true);
+ assert.equal((await host.call('host:reveal',{code:c.code})).ok,true);
+ assert.equal(host.events.filter(e=>e.e==='room:state').at(-1).v.voteCount,1);
+});
+test('late arrivals during voting get regular role and can vote; results phase joins rejected',async()=>{
+ const {connect}=setup(),host=connect(),c=await host.call('host:create'),players=[];
+ for(let i=0;i<3;i++){const s=connect();players.push({s,...await s.call('player:join',{code:c.code,name:'P'+i})});}
+ await host.call('host:start',{code:c.code});await host.call('host:vote',{code:c.code});
+ const late=connect(),j=await late.call('player:join',{code:c.code,name:'LateVote'});
+ assert.equal(j.ok,true);assert.equal(late.events.find(e=>e.e==='player:role').v.imposter,false);
+ assert.equal((await late.call('player:vote',{id:players[0].id})).ok,true);
+ await host.call('host:reveal',{code:c.code});
+ const rejected=await connect().call('player:join',{code:c.code,name:'TooLate'});
+ assert.equal(rejected.ok,false);
+});
+test('reroll keeps same imposter, changes word version, clears votes and returns to clues',async()=>{
+ const {connect}=setup(),host=connect(),c=await host.call('host:create'),players=[];
+ for(let i=0;i<3;i++){const s=connect();players.push({s,...await s.call('player:join',{code:c.code,name:'P'+i})});}
+ await host.call('host:start',{code:c.code});const old=host.events.filter(e=>e.e==='room:state').at(-1).v;
+ const oldImposter=players.find(p=>p.s.events.find(e=>e.e==='player:role').v.imposter).id;
+ await host.call('host:vote',{code:c.code});await players[0].s.call('player:vote',{id:players[1].id});
+ assert.equal((await host.call('host:reroll',{code:c.code})).ok,true);
+ const now=host.events.filter(e=>e.e==='room:state').at(-1).v;
+ assert.equal(now.phase,'clues');assert.equal(now.round,old.round+1);assert.equal(now.voteCount,0);
+ assert.equal(players.find(p=>p.s.events.filter(e=>e.e==='player:role').at(-1).v.imposter).id,oldImposter);
+ assert.equal(players.every(p=>p.s.events.filter(e=>e.e==='player:role').length===2),true);
+});
+test('restart assigns new roles, resets votes, preserves late players, and rejects spectator role hijack',async()=>{
+ const {connect}=setup(),host=connect(),c=await host.call('host:create'),players=[];
+ for(let i=0;i<3;i++){const s=connect();players.push({s,...await s.call('player:join',{code:c.code,name:'P'+i})});}
+ await host.call('host:start',{code:c.code});
+ const late=connect(),joined=await late.call('player:join',{code:c.code,name:'Late'});
+ assert.equal(late.events.at(-2)?.e==='player:role'||late.events.at(-1)?.e==='player:role',true);
+ await host.call('host:vote',{code:c.code});await late.call('player:vote',{id:players[0].id});
+ assert.equal((await host.call('host:restart',{code:c.code})).ok,true);
+ const state=host.events.filter(e=>e.e==='room:state').at(-1).v;
+ assert.equal(state.phase,'clues');assert.equal(state.voteCount,0);assert.equal(state.eligibleCount,4);
+ assert.equal([...players.map(p=>p.s),late].map(s=>s.events.filter(e=>e.e==='player:role').at(-1).v).filter(r=>r.imposter).length,1);
+ assert.equal((await host.call('host:restart',{code:c.code})).ok,true);
+});
+test('reroll/restart are host-only and cannot run before round or after results',async()=>{
+ const {connect}=setup(),host=connect(),c=await host.call('host:create');
+ const outsider=connect();assert.equal((await outsider.call('host:restart',{code:c.code})).ok,false);
+ assert.equal((await host.call('host:reroll',{code:c.code})).ok,false);
+ const players=[];for(let i=0;i<3;i++){const p=connect();players.push(p);await p.call('player:join',{code:c.code,name:'P'+i});}
+ await host.call('host:start',{code:c.code});await host.call('host:vote',{code:c.code});await host.call('host:reveal',{code:c.code});
+ assert.equal((await host.call('host:reroll',{code:c.code})).ok,false);
+});
