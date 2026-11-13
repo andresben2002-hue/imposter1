@@ -5,7 +5,7 @@ function setup(){
  const fakeExpress=()=>({use(){},get(){}});fakeExpress.static=()=>{};
  const fakeRequire=x=>x==='express'?fakeExpress:x==='http'?{createServer:()=>server}:x==='socket.io'?{Server:class{constructor(){return io}}}:x==='qrcode'?{toBuffer:async()=>Buffer.from('')}:x==='./word-store'?{initialize:async()=>{},nextWord:async()=>({en:'Beach',es:'Playa',id:'beach'}),stats:()=>({total:270,remaining:269,cycles:0})}:require(x);
  vm.runInNewContext(fs.readFileSync(__dirname+'/server.js','utf8'),{require:fakeRequire,__dirname,process,console,Buffer,setTimeout,clearTimeout});
- function connect(){const listeners={},events=[];const s={id:crypto.randomUUID(),data:{},joined:new Set(),on(e,cb){listeners[e]=cb},join(r){this.joined.add(r)},leave(r){this.joined.delete(r)},emit(e,v){events.push({e,v})},disconnect(){sockets.delete(this.id);listeners.disconnect?.()},call(e,arg={}){return new Promise((resolve,reject)=>{try{listeners[e](arg,r=>resolve(r));}catch(err){reject(err)}})},events};sockets.set(s.id,s);onConnect(s);return s;}
+ function connect(){const listeners={},events=[];const s={id:crypto.randomUUID(),data:{},joined:new Set(),on(e,cb){listeners[e]=cb},join(r){this.joined.add(r)},leave(r){this.joined.delete(r)},emit(e,v){events.push({e,v})},disconnect(){sockets.delete(this.id);listeners.disconnect?.()},async openVoting(code){for(const x of sockets.values())if(x.data.room===code&&x.data.playerId)await x.call('player:clue',{text:'Clue '+x.id.slice(0,5)});return this.call('host:vote',{code});},call(e,arg={}){return new Promise((resolve,reject)=>{try{listeners[e](arg,r=>resolve(r));}catch(err){reject(err)}})},events};sockets.set(s.id,s);onConnect(s);return s;}
  return {connect};
 }
 test('private bilingual roles, voting and result',async()=>{
@@ -15,7 +15,7 @@ test('private bilingual roles, voting and result',async()=>{
  const roles=players.map(p=>p.s.events.find(e=>e.e==='player:role')?.v);assert.equal(roles.length,3);assert.equal(roles.filter(r=>r.imposter).length,1);
  assert.equal(roles.filter(r=>!r.imposter).every(r=>r.word.en==='Beach'&&r.word.es==='Playa'),true);
  assert.equal(host.events.some(e=>e.e==='player:role'),false);
- assert.equal((await host.call('host:vote',{code:c.code})).ok,true);
+ assert.equal((await host.openVoting(c.code)).ok,true);
  assert.equal((await players[0].s.call('player:vote',{id:players[0].id})).ok,false);
  assert.equal((await players[0].s.call('player:vote',{id:players[1].id})).ok,true);
  assert.equal((await players[0].s.call('player:vote',{id:players[2].id})).ok,false);
@@ -25,11 +25,11 @@ test('private bilingual roles, voting and result',async()=>{
 test('offline participants excluded; old host loses authority',async()=>{
  const {connect}=setup(),host=connect(),c=await host.call('host:create'),players=[];
  for(let i=0;i<4;i++){const s=connect();players.push({s,...await s.call('player:join',{code:c.code,name:'P'+i})});}
- await host.call('host:start',{code:c.code});await host.call('host:vote',{code:c.code});await host.call('host:reveal',{code:c.code});await host.call('host:reset',{code:c.code});
+ await host.call('host:start',{code:c.code});await host.openVoting(c.code);await host.call('host:reveal',{code:c.code});await host.call('host:reset',{code:c.code});
  players[3].s.disconnect();assert.equal((await host.call('host:start',{code:c.code})).ok,true);
  const reconnect=connect();assert.equal((await reconnect.call('player:join',{code:c.code,name:'P3',playerToken:players[3].playerToken})).ok,true);
  assert.equal(reconnect.events.some(e=>e.e==='player:role'),false);
- await host.call('host:vote',{code:c.code});assert.equal((await reconnect.call('player:vote',{id:players[0].id})).ok,false);
+ await host.openVoting(c.code);assert.equal((await reconnect.call('player:vote',{id:players[0].id})).ok,false);
  const newHost=connect();assert.equal((await newHost.call('host:resume',{code:c.code,hostToken:c.hostToken})).ok,false);
  assert.equal((await host.call('host:reveal',{code:c.code})).ok,true);
  host.disconnect();
@@ -105,24 +105,18 @@ test('duplicated player tab cannot steal live session, but offline reconnect suc
  const resumed=await duplicated.call('player:join',{code:c.code,name:'A',playerToken:p.playerToken});
  assert.equal(resumed.ok,true);assert.equal(resumed.id,p.id);
 });
-test('explicit recovery needs secret and offline host, rotates control token',async()=>{
- const {connect}=setup(),h=connect(),c=await h.call('host:create');
- const other=connect();
- assert.equal((await other.call('host:resume',{code:c.code,hostToken:c.hostToken})).ok,false);
- assert.equal((await other.call('host:recover',{code:c.code,recoveryKey:c.recoveryKey})).ok,false);
- h.disconnect();
- assert.equal((await other.call('host:recover',{code:c.code,recoveryKey:'wrong'})).ok,false);
- const recovered=await other.call('host:recover',{code:c.code,recoveryKey:c.recoveryKey});
- assert.equal(recovered.ok,true);assert.notEqual(recovered.hostToken,c.hostToken);
- const oldTab=connect();
- assert.equal((await oldTab.call('host:resume',{code:c.code,hostToken:c.hostToken})).ok,false);
- assert.equal((await other.call('host:sync',{code:c.code,hostToken:recovered.hostToken})).ok,true);
-});
-test('host recovery window defaults to two minutes',()=>{
+test('host does not provide manual recovery keys or recovery endpoints',async()=>{
+ const {connect}=setup(),host=connect(),created=await host.call('host:create');
+ assert.equal('recoveryKey' in created,false);
  const source=fs.readFileSync(__dirname+'/server.js','utf8');
- assert.match(source,/HOST_DISCONNECT_GRACE_MS\) \|\| 120000/);
+ const html=fs.readFileSync(__dirname+'/public/host.html','utf8');
+ assert.doesNotMatch(source,/host:recover|recoveryKey/);
+ assert.doesNotMatch(html,/recoverKey|recoverBtn|recoveryDisplay/i);
 });
-
+test('host disconnect grace defaults to 4 seconds',()=>{
+ const source=fs.readFileSync(__dirname+'/server.js','utf8');
+ assert.match(source,/HOST_DISCONNECT_GRACE_MS\) \|\| 4000/);
+});
 test('refresh race: same token blocked while original online; succeeds after disconnect; name reserved safely',async()=>{
  const {connect}=setup(),host=connect(),created=await host.call('host:create');
  const old=connect(),joined=await old.call('player:join',{code:created.code,name:'RefreshMe'});
@@ -171,7 +165,7 @@ test('late arrivals join clues as non-imposters with bilingual role and can vote
  assert.equal(oldRoles.filter(r=>r.imposter).length,1);
  let state=host.events.filter(e=>e.e==='room:state').at(-1).v;
  assert.equal(state.eligibleCount,4);assert.equal(state.players.find(p=>p.id===j.id).active,true);
- assert.equal((await host.call('host:vote',{code:c.code})).ok,true);
+ assert.equal((await host.openVoting(c.code)).ok,true);
  assert.equal((await late.call('player:vote',{id:players[0].id})).ok,true);
  assert.equal((await host.call('host:reveal',{code:c.code})).ok,true);
  assert.equal(host.events.filter(e=>e.e==='room:state').at(-1).v.voteCount,1);
@@ -179,7 +173,7 @@ test('late arrivals join clues as non-imposters with bilingual role and can vote
 test('late arrivals during voting get regular role and can vote; results phase joins rejected',async()=>{
  const {connect}=setup(),host=connect(),c=await host.call('host:create'),players=[];
  for(let i=0;i<3;i++){const s=connect();players.push({s,...await s.call('player:join',{code:c.code,name:'P'+i})});}
- await host.call('host:start',{code:c.code});await host.call('host:vote',{code:c.code});
+ await host.call('host:start',{code:c.code});await host.openVoting(c.code);
  const late=connect(),j=await late.call('player:join',{code:c.code,name:'LateVote'});
  assert.equal(j.ok,true);assert.equal(late.events.find(e=>e.e==='player:role').v.imposter,false);
  assert.equal((await late.call('player:vote',{id:players[0].id})).ok,true);
@@ -192,7 +186,7 @@ test('reroll keeps same imposter, changes word version, clears votes and returns
  for(let i=0;i<3;i++){const s=connect();players.push({s,...await s.call('player:join',{code:c.code,name:'P'+i})});}
  await host.call('host:start',{code:c.code});const old=host.events.filter(e=>e.e==='room:state').at(-1).v;
  const oldImposter=players.find(p=>p.s.events.find(e=>e.e==='player:role').v.imposter).id;
- await host.call('host:vote',{code:c.code});await players[0].s.call('player:vote',{id:players[1].id});
+ await host.openVoting(c.code);await players[0].s.call('player:vote',{id:players[1].id});
  assert.equal((await host.call('host:reroll',{code:c.code})).ok,true);
  const now=host.events.filter(e=>e.e==='room:state').at(-1).v;
  assert.equal(now.phase,'clues');assert.equal(now.round,old.round+1);assert.equal(now.voteCount,0);
@@ -205,7 +199,7 @@ test('restart assigns new roles, resets votes, preserves late players, and rejec
  await host.call('host:start',{code:c.code});
  const late=connect(),joined=await late.call('player:join',{code:c.code,name:'Late'});
  assert.equal(late.events.at(-2)?.e==='player:role'||late.events.at(-1)?.e==='player:role',true);
- await host.call('host:vote',{code:c.code});await late.call('player:vote',{id:players[0].id});
+ await host.openVoting(c.code);await late.call('player:vote',{id:players[0].id});
  assert.equal((await host.call('host:restart',{code:c.code})).ok,true);
  const state=host.events.filter(e=>e.e==='room:state').at(-1).v;
  assert.equal(state.phase,'clues');assert.equal(state.voteCount,0);assert.equal(state.eligibleCount,4);
@@ -217,6 +211,99 @@ test('reroll/restart are host-only and cannot run before round or after results'
  const outsider=connect();assert.equal((await outsider.call('host:restart',{code:c.code})).ok,false);
  assert.equal((await host.call('host:reroll',{code:c.code})).ok,false);
  const players=[];for(let i=0;i<3;i++){const p=connect();players.push(p);await p.call('player:join',{code:c.code,name:'P'+i});}
- await host.call('host:start',{code:c.code});await host.call('host:vote',{code:c.code});await host.call('host:reveal',{code:c.code});
+ await host.call('host:start',{code:c.code});await host.openVoting(c.code);await host.call('host:reveal',{code:c.code});
  assert.equal((await host.call('host:reroll',{code:c.code})).ok,false);
+});
+
+test('clues are required from all connected players, ordered and publicly visible',async()=>{
+ const {connect}=setup(),h=connect(),c=await h.call('host:create'),ps=[];
+ for(let i=0;i<3;i++){const s=connect(),j=await s.call('player:join',{code:c.code,name:'P'+i});ps.push({s,...j});}
+ await h.call('host:start',{code:c.code});
+ assert.equal((await h.call('host:vote',{code:c.code})).ok,false);
+ assert.equal((await ps[0].s.call('player:clue',{text:'  ola   azul  '})).ok,true);
+ assert.equal((await ps[0].s.call('player:clue',{text:'another'})).ok,false);
+ assert.equal((await ps[1].s.call('player:clue',{text:'   '})).ok,false);
+ assert.equal((await ps[1].s.call('player:clue',{text:'árbol'})).ok,true);
+ assert.equal((await h.call('host:vote',{code:c.code})).ok,false);
+ await ps[2].s.call('player:clue',{text:'tree'});
+ const state=h.events.filter(e=>e.e==='room:state').at(-1).v;
+ assert.equal(state.clueCount,3);assert.equal(state.submittedRequiredClues,3);
+ assert.equal(JSON.stringify(state.clues.map(c=>c.text)),JSON.stringify(['ola azul','árbol','tree']));
+ assert.equal((await h.call('host:vote',{code:c.code,seconds:60})).ok,true);
+ const voting=h.events.filter(e=>e.e==='room:state').at(-1).v;
+ assert.equal(voting.votingSeconds,60);assert.ok(voting.votingStartedAt>0);
+});
+test('vote is locked until explicit change then can be resubmitted',async()=>{
+ const {connect}=setup(),h=connect(),c=await h.call('host:create'),ps=[];
+ for(let i=0;i<3;i++){const s=connect(),j=await s.call('player:join',{code:c.code,name:'P'+i});ps.push({s,...j});}
+ await h.call('host:start',{code:c.code});await h.openVoting(c.code);
+ assert.equal((await ps[0].s.call('player:vote',{id:ps[1].id})).ok,true);
+ assert.equal((await ps[0].s.call('player:vote',{id:ps[2].id})).ok,false);
+ assert.equal((await ps[0].s.call('player:change-vote',{})).ok,true);
+ assert.equal(h.events.filter(e=>e.e==='room:state').at(-1).v.voteCount,0);
+ assert.equal((await ps[0].s.call('player:vote',{id:ps[2].id})).ok,true);
+ assert.equal((await h.call('host:reveal',{code:c.code})).ok,true);
+ const r=h.events.filter(e=>e.e==='room:state').at(-1).v.result;
+ assert.equal(r.tally[ps[2].id],1);assert.equal(r.tally[ps[1].id]||0,0);
+ assert.equal((await ps[0].s.call('player:change-vote',{})).ok,false);
+});
+test('timer is non-enforcing, late clues are required, reroll clears everything',async()=>{
+ const {connect}=setup(),h=connect(),c=await h.call('host:create'),ps=[];
+ for(let i=0;i<3;i++){const s=connect();ps.push({s,...await s.call('player:join',{code:c.code,name:'P'+i})});}
+ await h.call('host:start',{code:c.code});
+ const later=connect(),j=await later.call('player:join',{code:c.code,name:'Late'});
+ assert.equal(later.events.filter(e=>e.e==='player:role').at(-1).v.imposter,false);
+ for(const p of ps)await p.s.call('player:clue',{text:'one'});
+ assert.equal((await h.call('host:vote',{code:c.code})).ok,false);
+ assert.equal((await later.call('player:clue',{text:'dos'})).ok,true);
+ await h.call('host:vote',{code:c.code,seconds:30});
+ const room=h.events.filter(e=>e.e==='room:state').at(-1).v;
+ assert.equal(room.votingSeconds,30);
+ // Even after any amount of wall time, no server timeout advances phases.
+ assert.equal((await ps[0].s.call('player:vote',{id:j.id})).ok,true);
+ assert.equal((await h.call('host:reroll',{code:c.code})).ok,true);
+ const rerolled=h.events.filter(e=>e.e==='room:state').at(-1).v;
+ assert.equal(rerolled.phase,'clues');assert.equal(rerolled.clueCount,0);assert.equal(rerolled.voteCount,0);assert.equal(rerolled.votingStartedAt,null);
+});
+test('frontend exposes clues, voting timer and change-vote controls, and no recovery key',()=>{
+ const host=fs.readFileSync(__dirname+'/public/host.js','utf8');
+ const player=fs.readFileSync(__dirname+'/public/player.js','utf8');
+ const phtml=fs.readFileSync(__dirname+'/public/player.html','utf8');
+ assert.match(player,/player:change-vote/);assert.match(player,/player:clue/);
+ assert.match(host,/clueList/);assert.match(host,/timerDuration/);
+ assert.match(phtml,/id="changeVote"/);assert.match(phtml,/id="clueInput"/);
+ assert.doesNotMatch(host,/host:recover|recoveryKey/);
+});
+
+
+test('timer accepts five minutes and stays informational', async()=>{
+ const serverSource=require('fs').readFileSync(require('path').join(__dirname,'server.js'),'utf8');
+ const hostHtml=require('fs').readFileSync(require('path').join(__dirname,'public/host.html'),'utf8');
+ assert.match(serverSource,/\[30,60,90,120,180,240,300\]\.includes/);
+ assert.match(hostHtml,/<option value="300">5 min<\/option>/);
+});
+
+test('failed second-player join on same socket does not reserve a ghost name',async()=>{
+ const {connect}=setup(), host=connect(), c=await host.call('host:create');
+ const one=connect(), first=await one.call('player:join',{code:c.code,name:'Alice'});
+ assert.equal(first.ok,true);
+ const denied=await one.call('player:join',{code:c.code,name:'Bob'});
+ assert.equal(denied.ok,false);
+ const state=(await host.call('host:sync',{code:c.code,hostToken:c.hostToken})).state;
+ assert.equal(state.players.map(p=>p.name).join(','),'Alice');
+ const another=connect();assert.equal((await another.call('player:join',{code:c.code,name:'Bob'})).ok,true);
+});
+
+test('host socket cannot also register a phantom player',async()=>{
+ const {connect}=setup(),host=connect(), c=await host.call('host:create');
+ const denied=await host.call('player:join',{code:c.code,name:'Phantom'});
+ assert.equal(denied.ok,false);
+ const state=(await host.call('host:sync',{code:c.code,hostToken:c.hostToken})).state;
+ assert.equal(state.players.length,0);
+});
+
+test('host UI does not clear action errors on routine state refresh',()=>{
+ const source=fs.readFileSync(__dirname+'/public/host.js','utf8');
+ assert.doesNotMatch(source,/state=s;hostReady=true;show\(\);error\(''\)/);
+ assert.match(source,/state=s;hostReady=socket.connected;show\(\)/);
 });

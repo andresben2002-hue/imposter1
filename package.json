@@ -1,6 +1,6 @@
 {
   "name": "imposter-party",
-  "version": "2.0.0",
+  "version": "4.3.0",
   "private": true,
   "description": "Host-screen and phone multiplayer Imposter party game",
   "scripts": {

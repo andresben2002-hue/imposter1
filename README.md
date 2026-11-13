@@ -1,4 +1,4 @@
-# Imposter Party — Online + English/Español (v2)
+# Imposter Party — Clues, Change Vote & Timer (v4)
 
 A multiplayer Imposter game with a host display for a TV and private player screens on phones. The host can be in the US while players join from Mexico, using the same **public HTTPS URL**. Host and player can choose languages independently.
 
@@ -107,31 +107,29 @@ network. Hosting a second room in another tab will not end the first one.
 The global used-word history is intentionally shared between rooms so words
 are not accidentally reused just because a different host starts a game.
 
-## Session safety and recovering a host room (v2.4)
+## Session isolation and host lifetime (v4)
 
-- Every player tab uses `sessionStorage` for its session. A duplicated tab may copy this storage, but the server **rejects** attempts to resume a player whose original tab is still connected. It does not kick the original player out.
-- Likewise, a second host tab cannot replace a live host. Close the original host tab before recovering it.
-- The host page has a collapsible **Host recovery key / Clave de recuperación** section. Save that secret somewhere private before a game. Do not expand it while projecting the page on a shared TV. It is distinct from the public six-digit room code.
-- If the host tab closes or its connection drops, its room remains available for **120 seconds** by default. A quick refresh can reconnect automatically. Alternatively, reopen `/host.html` and use **Recover an existing room / Recuperar sala**, entering the six-digit room code and the private recovery key. This will work only when the original host is offline, and rotates its active session token.
-- The grace period can be configured via `HOST_DISCONNECT_GRACE_MS` (milliseconds; default 120000). If you previously configured this variable on Render as `4000`, remove it or change it to `120000` to get two minutes.
-- The room and recovery key live in server memory. A Render restart, server redeploy, or expired recovery window will destroy that room, and a new room must be created. Persistent word history is separate.
-- To simulate a duplicated tab, duplicate a connected player tab and confirm the new tab shows an error without disrupting the original, or duplicate a connected host tab and confirm control is denied. To test recovery, close the host tab and enter its saved recovery key on a fresh host tab within two minutes.
+- Player identities belong to individual browser-tab sessions; refreshing keeps the same player identity, while a duplicate tab cannot take over an active connection.
+- There is **no host recovery key** and no manual recovery feature. A host refresh in the same tab can reconnect during the short grace period. If that period expires, the entire room closes and every player must join a new room.
+- Default host disconnect grace: **4 seconds**. Configure `HOST_DISCONNECT_GRACE_MS` only if you intentionally need a different duration. Remove any old Render setting of `120000` to use the new default.
+- A server restart or Render deployment ends all active rooms. Word history may survive separately when a database is configured.
+
+## The new clue and voting flow
+
+1. Everyone joins, then the host starts the round with 3+ connected players.
+2. Each player privately reveals the secret word or Imposter role. Players **take turns aloud in real life**; after speaking, each types a clue of up to 100 characters into their phone and taps **Submit clue / Enviar pista**.
+3. Everyone sees each submitted clue exactly as typed in the shared clue board (without auto-translation). The host can open voting **only once all currently connected round participants have submitted**. If someone disconnects, their missing clue doesn't block the round; if someone joins during clues, they must also submit.
+4. Voting shows a host-selected 30/60/90/120/180/240/300 second **informational countdown** (90 default). Overtime is displayed, but the game never auto-locks votes, reveals the Imposter, or advances when time runs out.
+5. Players select a name, then **Submit vote / Enviar voto**. Their selection becomes locked after submission. **Change vote / Cambiar voto** explicitly withdraws the submitted vote and unlocks selection, so they can choose and submit a replacement before the host reveals results.
+6. The host can reveal results at any time during voting, regardless of vote count or timer. **New word** and **Restart round** clear submitted clues, votes and the timer, returning to clues with appropriate role behavior.
+
+Late joins during **voting** receive the secret word as a non-Imposter, can see the already submitted clues and can vote without submitting a clue. Late joins during clues must submit before the host can start voting. New joins are disabled during results. Submitted clues are public to room participants (and anyone with the live room code). Avoid including private information.
+
+## Verification
+
+Run `npm test`: simulated server, UI-structure and word-history tests. These tests do not verify real phones or hosted Socket.IO connections. Before a game night, confirm the full flow with 3 phones on your Render deployment.
 
 
-## Player refresh/reconnect fix (v2.5)
+## Audit v4.2.1
 
-- A refreshed tab can reach the server before the old Socket.IO connection has fully expired. The server continues to reject a competing tab, but the **refreshed tab now keeps its original saved token and retries** instead of discarding its identity. It may take up to ~45–60 seconds for a stale connection to expire if the original tab disappeared without a clean disconnect.
-- If a previously deployed buggy version already erased your saved player token, that identity cannot be proved from the name alone. In the **lobby or results screen**, the host can click **Remove / Quitar** next to that *offline* entry, then the player can join again with their original name. This does not remove connected players or interrupt a live round.
-- Refreshing or resuming with the original session preserves the same player ID and role; a duplicated tab cannot take control while its original Socket.IO connection is active.
-- Update **server.js**, **public/player.js**, **public/player.html**, **public/host.js**, and **public/host.html** together, deploy the GitHub commit on Render, then hard-refresh pages and create a fresh room.
-- Verify by joining with three phones, refreshing one mid-round and immediately reconnecting, and testing that its secret word and voting eligibility remain intact. Test a disconnected stale name removal in the lobby too.
-
-
-## Mid-round participation and host controls (v3.0)
-
-- New players may join during **Clues** or **Voting**; they are always ordinary players (never the Imposter for the current round). They immediately receive the current secret word and may vote if voting is open. Existing players and the Imposter stay unchanged. Late joining during **Results** is blocked until the lobby.
-- **New word / Nueva palabra**: keeps the current Imposter if still connected, fetches a new word from the no-repeat word store, increments the round number, resets votes, and returns everyone to Clues. If the prior Imposter disconnected, a new Imposter is selected among currently connected players.
-- **Restart round / Reiniciar ronda**: chooses a fresh word and a newly randomized Imposter from all connected players, clears votes and returns to Clues. A randomly selected new Imposter might coincidentally be the same person as before.
-- Both host actions require at least three connected players and confirmation. Role cards must be revealed again after reroll or restart. The UI keeps the host-only word hidden.
-- **Word history:** every reroll/restart consumes another unique word from the current cycle (unless the word bank has been exhausted).
-- Players joining during voting can vote immediately; if you want everyone to give a clue first, the host can use New word to start a fresh clue phase.
+See `AUDIT.md` for confirmed fixes, remaining connectivity limitations, and recommended live-device acceptance checks.

@@ -1,5 +1,6 @@
 (function(){
 const translations={
+'Back to home':'← Volver al inicio','Home':'Inicio','Host':'Anfitrión','Play':'Jugar',
 'Host screen · Display on your TV':'Pantalla del anfitrión · Muéstrala en tu TV',
 'Everyone gets the secret word. One player gets nothing. Find the fake.':'Todos reciben la palabra secreta, menos una persona. ¡Encuentren al impostor!',
 'Game night starts here':'La noche de juegos comienza aquí',
@@ -58,6 +59,10 @@ const translations={
 'Blend in. Listen closely. Pretend you know the word.':'Disimula. Escucha con atención. Finge que conoces la palabra.',
 'Give one word related to the secret. Do not say the word itself.':'Di una palabra relacionada, pero no la palabra secreta.',
 'Vote submitted ✓':'Voto enviado ✓', 'Vote recorded.':'Voto registrado.',
+'Submit your clue':'Envía tu pista','Speak your clue aloud on your turn, then type it here. Everyone will see exactly what you type, without automatic translation.':'Di tu pista en voz alta cuando sea tu turno y luego escríbela aquí. Todos verán exactamente lo que escribas, sin traducción automática.',
+'Your word or phrase':'Tu palabra o frase','Submit clue':'Enviar pista','Submitted clues':'Pistas enviadas','Clue submitted ✓':'Pista enviada ✓','Your clue is visible to everyone.':'Todos pueden ver tu pista.','No clues submitted yet.':'Todavía no hay pistas.','clues submitted':'pistas enviadas','Submitting...':'Enviando...','Enter a clue (1–100 characters).':'Escribe una pista (1–100 caracteres).',
+'Change vote':'Cambiar voto','Choose your new vote.':'Elige tu nuevo voto.','Select a player, then submit. To change your choice later, tap Change vote.':'Elige a un jugador y envía tu voto. Para cambiarlo, toca Cambiar voto.',
+'Voting timer':'Tiempo para votar','Overtime':'Tiempo extra','Voting timer duration (informational only)':'Duración del temporizador (solo informativo)',
 'connected':'conectados','registered':'registrados',
 'Need 3 connected players to start.':'Se necesitan 3 jugadores conectados para iniciar.',
 'The host screen does not count as a player.':'La pantalla del anfitrión no cuenta como jugador.',

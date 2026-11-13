@@ -12,14 +12,14 @@ const io = new Server(server);
 const rooms = new Map();
 const PORT = process.env.PORT || 3000;
 // Allow quick refreshes/temporary network drops without leaving an abandoned room online.
-const HOST_DISCONNECT_GRACE_MS = Math.max(1000, Number(process.env.HOST_DISCONNECT_GRACE_MS) || 120000);
+const HOST_DISCONNECT_GRACE_MS = Math.max(1000, Number(process.env.HOST_DISCONNECT_GRACE_MS) || 4000);
 const { initialize, nextWord, stats } = require('./word-store');
 const rand = (n) => crypto.randomInt(n);
 const token = () => crypto.randomBytes(24).toString('hex');
 function roomCode() { let c; do { c = crypto.randomInt(100000,999999).toString(); } while(rooms.has(c)); return c; }
 function publicState(room) {
-  const players = [...room.players.values()].map(p=>({id:p.id,name:p.name,online:!!p.socketId,active:room.participants.has(p.id),hasVoted:room.votes.has(p.id)}));
-  return { code:room.code,phase:room.phase,round:room.round,players,onlineCount:players.filter(p=>p.online).length,voteCount:room.votes.size,eligibleCount:room.participants.size,hostOnline:!!(room.hostSocket&&io.sockets.sockets.has(room.hostSocket)),
+  const players = [...room.players.values()].map(p=>({id:p.id,name:p.name,online:!!p.socketId,active:room.participants.has(p.id),hasVoted:room.votes.has(p.id),clueSubmitted:room.clues.has(p.id)}));
+  return { code:room.code,phase:room.phase,round:room.round,players,onlineCount:players.filter(p=>p.online).length,voteCount:room.votes.size,eligibleCount:room.participants.size,clues:[...room.clues.entries()].map(([id,text])=>({id,name:room.players.get(id)?.name||'Player',text})),clueCount:room.clues.size,requiredClues:[...room.participants].filter(id=>{const p=room.players.get(id);return p?.socketId&&io.sockets.sockets.has(p.socketId)}).length,submittedRequiredClues:[...room.participants].filter(id=>{const p=room.players.get(id);return p?.socketId&&io.sockets.sockets.has(p.socketId)&&room.clues.has(id)}).length,votingStartedAt:room.votingStartedAt,votingSeconds:room.votingSeconds,hostOnline:!!(room.hostSocket&&io.sockets.sockets.has(room.hostSocket)),
     result:room.phase==='results' ? room.result : null, wordStats:stats() };
 }
 function broadcast(room) { io.to('room:'+room.code).emit('room:state',publicState(room)); }
@@ -41,7 +41,7 @@ function scheduleHostClosure(room, socketId) {
   if(room.closeTimer) clearTimeout(room.closeTimer);
   room.closeTimer=setTimeout(()=>{
     room.closeTimer=null;
-    if(room.hostSocket===socketId) closeRoom(room,'Host recovery period expired. This room has ended.');
+    if(room.hostSocket===socketId) closeRoom(room,'Host disconnected. This room has ended.');
   },HOST_DISCONNECT_GRACE_MS);
   room.closeTimer.unref?.();
 }
@@ -73,36 +73,23 @@ app.get('/api/qr',async(req,res)=>{
 io.on('connection',socket=>{
   socket.on('host:create',(_data,ack)=>{
     if(socket.data.room) return fail(ack,'This tab is already associated with a game. Open another tab to create a new room.');
-    const code=roomCode(), hostToken=token(), recoveryKey=token();
-    const room={code,hostToken,recoveryKey,hostSocket:socket.id,players:new Map(),phase:'lobby',round:0,
-      word:null,imposterId:null,participants:new Set(),votes:new Map(),result:null,starting:false,closeTimer:null};
+    const code=roomCode(), hostToken=token();
+    const room={code,hostToken,hostSocket:socket.id,players:new Map(),phase:'lobby',round:0,
+      word:null,imposterId:null,participants:new Set(),votes:new Map(),clues:new Map(),votingStartedAt:null,votingSeconds:90,result:null,starting:false,closeTimer:null};
     rooms.set(code,room); socket.data.room=code;socket.data.hostToken=hostToken;
     socket.join('room:'+code);
-    reply(ack,{ok:true,code,hostToken,recoveryKey,state:publicState(room)});broadcast(room);
+    reply(ack,{ok:true,code,hostToken,state:publicState(room)});broadcast(room);
   });
   // An existing live host tab owns the room. A duplicated tab cannot seize it.
   socket.on('host:resume',({code,hostToken}={},ack)=>{
     const room=rooms.get(String(code||''));
-    if(!room||room.hostToken!==hostToken) return fail(ack,'Host session expired. Use the recovery option or create a room.');
+    if(!room||room.hostToken!==hostToken) return fail(ack,'Host session expired. Create a new room.');
     if(socket.data.room && socket.data.room!==room.code) return fail(ack,'This tab already belongs to another room.');
     const active=room.hostSocket&&io.sockets.sockets.get(room.hostSocket);
     if(active&&active.id!==socket.id) return fail(ack,'Another host tab is currently active. This tab cannot take control.');
     if(room.closeTimer){clearTimeout(room.closeTimer);room.closeTimer=null;}
     socket.data.room=room.code;socket.data.hostToken=hostToken;room.hostSocket=socket.id;
     socket.join('room:'+room.code);reply(ack,{ok:true,state:publicState(room)});broadcast(room);
-  });
-  // Explicit recovery for a closed/lost host tab, but never while the original host is online.
-  socket.on('host:recover',({code,recoveryKey}={},ack)=>{
-    const room=rooms.get(String(code||''));
-    if(!room||!recoveryKey||room.recoveryKey!==recoveryKey) return fail(ack,'Invalid room or recovery key.');
-    if(socket.data.room && socket.data.room!==room.code) return fail(ack,'This tab already belongs to another room.');
-    if(room.hostSocket&&io.sockets.sockets.has(room.hostSocket)) return fail(ack,'The original host is still connected. Recovery is not allowed.');
-    if(room.closeTimer){clearTimeout(room.closeTimer);room.closeTimer=null;}
-    room.hostToken=token();room.hostSocket=socket.id;
-    socket.data.room=room.code;socket.data.hostToken=room.hostToken;
-    socket.join('room:'+room.code);
-    reply(ack,{ok:true,code:room.code,hostToken:room.hostToken,recoveryKey:room.recoveryKey,state:publicState(room)});
-    broadcast(room);
   });
   socket.on('host:sync',({code,hostToken}={},ack)=>{
     const room=rooms.get(String(code||''));
@@ -117,6 +104,10 @@ io.on('connection',socket=>{
     if(!room) return fail(ack,'Room not found. Check the code.','ROOM_NOT_FOUND');
     name=String(name||'').trim().slice(0,22);
     if(!name) return fail(ack,'Enter a player name.');
+    // Check tab ownership before creating any player record. Otherwise an already
+    // joined tab could reserve a second name despite the join being rejected.
+    if(socket.data.room && (socket.data.room!==room.code || socket.data.hostToken))
+      return fail(ack,'This tab already belongs to a game or host. Open a new player tab.');
     let p=[...room.players.values()].find(p=>p.token===playerToken);
     const isNewPlayer=!p;
     if(!p) {
@@ -126,7 +117,11 @@ io.on('connection',socket=>{
       if([...room.players.values()].some(p=>p.name.toLowerCase()===name.toLowerCase())) return fail(ack,'That name is already registered. If you lost your saved session, ask the host to remove the offline player from the lobby.','NAME_TAKEN');
       p={id:token().slice(0,12),token:token(),name,socketId:null};room.players.set(p.id,p);
     }
-    if(socket.data.playerId && (socket.data.room!==room.code || socket.data.playerId!==p.id)) return fail(ack,'This tab has already joined a player. Open another tab to switch players.');
+    if(socket.data.playerId && (socket.data.room!==room.code || socket.data.playerId!==p.id)) {
+      // Defensive cleanup: should not occur after the ownership guard above.
+      if(isNewPlayer)room.players.delete(p.id);
+      return fail(ack,'This tab has already joined a player. Open another tab to switch players.');
+    }
     if(p.socketId && p.socketId!==socket.id && io.sockets.sockets.has(p.socketId)) return fail(ack,'Previous connection is still active. Reconnecting automatically; keep this tab open.','PLAYER_ACTIVE');
     p.socketId=socket.id;socket.data.room=room.code;socket.data.playerId=p.id;
     // Assign a late arrival to the current round without changing the existing Imposter.
@@ -142,7 +137,7 @@ io.on('connection',socket=>{
     const p=room.players.get(String(id||''));
     if(!p)return fail(ack,'Player no longer exists.');
     if(p.socketId&&io.sockets.sockets.has(p.socketId))return fail(ack,'This player is connected. Ask them to leave first.');
-    room.players.delete(p.id);room.participants.delete(p.id);room.votes.delete(p.id);
+    room.players.delete(p.id);room.participants.delete(p.id);room.votes.delete(p.id);room.clues.delete(p.id);
     reply(ack,{ok:true});broadcast(room);
   });
   // start: new round and randomly choose an imposter.
@@ -167,7 +162,7 @@ io.on('connection',socket=>{
       const previousImposter=room.imposterId;
       const keepImposter=mode==='reroll' && allLive.some(p=>p.id===previousImposter);
       room.round++;
-      room.phase='clues';room.votes=new Map();room.result=null;
+      room.phase='clues';room.votes=new Map();room.clues=new Map();room.votingStartedAt=null;room.result=null;
       room.participants=new Set(allLive.map(p=>p.id));room.word=next;
       room.imposterId=keepImposter?previousImposter:allLive[rand(allLive.length)].id;
       for(const p of allLive){const connectedSocket=io.sockets.sockets.get(p.socketId);if(connectedSocket)giveRole(connectedSocket,room,p);}
@@ -178,19 +173,39 @@ io.on('connection',socket=>{
   socket.on('host:start',({code}={},ack)=>beginRound(socket,code,ack,'start'));
   socket.on('host:reroll',({code}={},ack)=>beginRound(socket,code,ack,'reroll'));
   socket.on('host:restart',({code}={},ack)=>beginRound(socket,code,ack,'restart'));
-  socket.on('host:vote',({code}={},ack)=>{
+  socket.on('player:clue',({text}={},ack)=>{
+    const room=rooms.get(socket.data.room);const p=getPlayer(socket,room);
+    if(!p)return fail(ack,'Player not found.');
+    if(room.phase!=='clues'||!room.participants.has(p.id))return fail(ack,'Clue submission is not available.');
+    text=String(text||'').trim().replace(/\s+/g,' ');
+    if(!text||text.length>100)return fail(ack,'Enter a clue of 1–100 characters.');
+    if(room.clues.has(p.id))return fail(ack,'Your clue was already submitted.');
+    room.clues.set(p.id,text);broadcast(room);reply(ack,{ok:true});
+  });
+  socket.on('host:vote',({code,seconds}={},ack)=>{
     const room=hostOnly(socket,String(code||''),ack);if(!room)return;
     if(room.phase!=='clues') return fail(ack,'Not in clue phase.');
-    room.phase='voting';broadcast(room);reply(ack,{ok:true});
+    const required=[...room.participants].filter(id=>{const p=room.players.get(id);return p?.socketId&&io.sockets.sockets.has(p.socketId)});
+    if(!required.length||required.some(id=>!room.clues.has(id)))return fail(ack,`Waiting for clues: ${required.filter(id=>room.clues.has(id)).length}/${required.length} connected players have submitted.`);
+    room.phase='voting';room.votingStartedAt=Date.now();room.votingSeconds=[30,60,90,120,180,240,300].includes(Number(seconds))?Number(seconds):90;
+    broadcast(room);reply(ack,{ok:true});
   });
   socket.on('player:vote',({id}={},ack)=>{
     const room=rooms.get(socket.data.room);const p=getPlayer(socket,room);
-    if(!p) return fail(ack,'Player not found.');
+    if(!p)return fail(ack,'Player not found.');
     if(room.phase!=='voting')return fail(ack,'Voting is not open.');
     if(!room.participants.has(p.id))return fail(ack,'You were not part of this round.');
     if(id===p.id || !room.participants.has(id))return fail(ack,'Invalid choice.');
-    if(room.votes.has(p.id))return fail(ack,'You already voted.');
+    // An explicit change is necessary after a vote has already been submitted.
+    if(room.votes.has(p.id))return fail(ack,'Vote already submitted. Select Change vote first.');
     room.votes.set(p.id,id);broadcast(room);reply(ack,{ok:true});
+  });
+  socket.on('player:change-vote',(_data={},ack)=>{
+    const room=rooms.get(socket.data.room);const p=getPlayer(socket,room);
+    if(!p)return fail(ack,'Player not found.');
+    if(room.phase!=='voting'||!room.participants.has(p.id))return fail(ack,'Voting is not open.');
+    if(!room.votes.has(p.id))return fail(ack,'No submitted vote to change.');
+    room.votes.delete(p.id);broadcast(room);reply(ack,{ok:true});
   });
   socket.on('host:reveal',({code}={},ack)=>{
     const room=hostOnly(socket,String(code||''),ack);if(!room)return;
@@ -206,7 +221,7 @@ io.on('connection',socket=>{
   socket.on('host:reset',({code}={},ack)=>{
     const room=hostOnly(socket,String(code||''),ack);if(!room)return;
     if(room.phase!=='results')return fail(ack,'Reveal the results first.');
-    room.phase='lobby';room.word=null;room.imposterId=null;room.participants.clear();room.votes.clear();room.result=null;
+    room.phase='lobby';room.word=null;room.imposterId=null;room.participants.clear();room.votes.clear();room.clues.clear();room.votingStartedAt=null;room.result=null;
     broadcast(room);reply(ack,{ok:true});
   });
   socket.on('disconnect',()=>{
