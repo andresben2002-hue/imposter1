@@ -67,9 +67,9 @@ test('host cannot assign a shared participant to an offline phone',async()=>{
 test('shared-phone and host role reveals discard stale asynchronous responses',()=>{
  const playerSource=fs.readFileSync(__dirname+'/public/player.js','utf8');
  const hostSource=fs.readFileSync(__dirname+'/public/host.js','utf8');
- assert.match(playerSource,/activeShared!==requestedId/);
+ assert.match(playerSource,/passSeat!==requestedId/);
  assert.match(playerSource,/state\?\.round!==requestedRound/);
- assert.match(playerSource,/stillControlled/);
+ assert.match(playerSource,/passSeats\(state\)\.some/);
  assert.match(hostSource,/state\?\.round!==requestedRound/);
  assert.match(hostSource,/managePrivateText'\)\.textContent=''/);
 });

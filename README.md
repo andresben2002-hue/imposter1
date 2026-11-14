@@ -1,3 +1,7 @@
+# v4.6 update
+
+See [RELEASE-v4.6.md](RELEASE-v4.6.md) for full translation and guided pass-the-phone changes.
+
 # Imposter Party — Clues, Change Vote & Timer (v4)
 
 A multiplayer Imposter game with a host display for a TV and private player screens on phones. The host can be in the US while players join from Mexico, using the same **public HTTPS URL**. Host and player can choose languages independently.
