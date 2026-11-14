@@ -17,9 +17,36 @@ const { initialize, nextWord, stats } = require('./word-store');
 const rand = (n) => crypto.randomInt(n);
 const token = () => crypto.randomBytes(24).toString('hex');
 function roomCode() { let c; do { c = crypto.randomInt(100000,999999).toString(); } while(rooms.has(c)); return c; }
+function isPresent(room,p){
+  if(p.managed){
+    if(!p.controllerId)return !!(room.hostSocket&&io.sockets.sockets.has(room.hostSocket));
+    const controller=room.players.get(p.controllerId);
+    return !!(controller?.socketId&&io.sockets.sockets.has(controller.socketId));
+  }
+  return !!(p.socketId&&io.sockets.sockets.has(p.socketId));
+}
+function manageAccess(socket,room,id){
+  const p=room?.players.get(String(id||''));
+  if(!p?.managed)return null;
+  if(p.controllerId){const controller=getPlayer(socket,room);return controller?.id===p.controllerId?p:null;}
+  return room.hostSocket===socket.id&&socket.data.hostToken===room.hostToken?p:null;
+}
+function submitClue(room,p,text,replace=false){
+  if(room.phase!=='clues'||!room.participants.has(p.id))return 'Clue submission is not available.';
+  text=String(text||'').trim().replace(/\s+/g,' ');
+  if(!text||text.length>100)return 'Enter a clue of 1–100 characters.';
+  if(!replace&&room.clues.has(p.id))return 'Clue already submitted.';
+  room.clues.set(p.id,text);broadcast(room);return null;
+}
+function submitVote(room,p,id,replace=false){
+  if(room.phase!=='voting'||!room.participants.has(p.id))return 'Voting is not open.';
+  if(id===p.id||!room.participants.has(id))return 'Invalid choice.';
+  if(!replace&&room.votes.has(p.id))return 'Vote already submitted. Select Change vote first.';
+  room.votes.set(p.id,id);broadcast(room);return null;
+}
 function publicState(room) {
-  const players = [...room.players.values()].map(p=>({id:p.id,name:p.name,online:!!p.socketId,active:room.participants.has(p.id),hasVoted:room.votes.has(p.id),clueSubmitted:room.clues.has(p.id)}));
-  return { code:room.code,phase:room.phase,round:room.round,players,onlineCount:players.filter(p=>p.online).length,voteCount:room.votes.size,eligibleCount:room.participants.size,clues:[...room.clues.entries()].map(([id,text])=>({id,name:room.players.get(id)?.name||'Player',text})),clueCount:room.clues.size,requiredClues:[...room.participants].filter(id=>{const p=room.players.get(id);return p?.socketId&&io.sockets.sockets.has(p.socketId)}).length,submittedRequiredClues:[...room.participants].filter(id=>{const p=room.players.get(id);return p?.socketId&&io.sockets.sockets.has(p.socketId)&&room.clues.has(id)}).length,votingStartedAt:room.votingStartedAt,votingSeconds:room.votingSeconds,hostOnline:!!(room.hostSocket&&io.sockets.sockets.has(room.hostSocket)),
+  const players = [...room.players.values()].map(p=>({id:p.id,name:p.name,online:isPresent(room,p),managed:!!p.managed,controllerId:p.controllerId||null,active:room.participants.has(p.id),hasVoted:room.votes.has(p.id),clueSubmitted:room.clues.has(p.id)}));
+  return { code:room.code,phase:room.phase,round:room.round,players,onlineCount:players.filter(p=>p.online).length,voteCount:room.votes.size,eligibleCount:room.participants.size,clues:[...room.clues.entries()].map(([id,text])=>({id,name:room.players.get(id)?.name||'Player',text})),clueCount:room.clues.size,requiredClues:[...room.participants].filter(id=>{const p=room.players.get(id);return p&&isPresent(room,p)}).length,submittedRequiredClues:[...room.participants].filter(id=>{const p=room.players.get(id);return p&&isPresent(room,p)&&room.clues.has(id)}).length,votingStartedAt:room.votingStartedAt,votingSeconds:room.votingSeconds,hostOnline:!!(room.hostSocket&&io.sockets.sockets.has(room.hostSocket)),
     result:room.phase==='results' ? room.result : null, wordStats:stats() };
 }
 function broadcast(room) { io.to('room:'+room.code).emit('room:state',publicState(room)); }
@@ -131,6 +158,65 @@ io.on('connection',socket=>{
     reply(ack,{ok:true,id:p.id,playerToken:p.token,name:p.name,code:room.code});
     socket.emit('room:state',publicState(room));giveRole(socket,room,p);broadcast(room);
   });
+  // Extra people occupy distinct seats but can be controlled from a shared phone
+  // or, for fully offline players, the host. Never put private roles in publicState.
+  socket.on('host:add-managed',({code,name,controllerId}={},ack)=>{
+    const room=hostOnly(socket,String(code||''),ack);if(!room)return;
+    if(!['lobby','clues','voting'].includes(room.phase))return fail(ack,'Add players before results.');
+    name=String(name||'').trim().slice(0,22);
+    if(!name)return fail(ack,'Enter a name.');
+    if(room.players.size>=20)return fail(ack,'This room is full.');
+    if([...room.players.values()].some(p=>p.name.toLowerCase()===name.toLowerCase()))return fail(ack,'Name already taken.');
+    if(controllerId){const target=room.players.get(String(controllerId));if(!target||target.managed||!isPresent(room,target))return fail(ack,'Choose a connected phone player.');}
+    const p={id:token().slice(0,12),name,managed:true,controllerId:controllerId||null,socketId:null};
+    room.players.set(p.id,p);
+    if(['clues','voting'].includes(room.phase))room.participants.add(p.id);
+    reply(ack,{ok:true,id:p.id});broadcast(room);
+  });
+  socket.on('host:assign-managed',({code,id,controllerId}={},ack)=>{
+    const room=hostOnly(socket,String(code||''),ack);if(!room)return;
+    const p=room.players.get(String(id||''));if(!p?.managed)return fail(ack,'Not a managed player.');
+    if(controllerId){const target=room.players.get(String(controllerId));if(!target||target.managed||!isPresent(room,target))return fail(ack,'Choose a connected phone player.');}
+    p.controllerId=controllerId||null;
+    reply(ack,{ok:true});broadcast(room);
+  });
+  socket.on('host:remove-managed',({code,id}={},ack)=>{
+    const room=hostOnly(socket,String(code||''),ack);if(!room)return;
+    if(!['lobby','results'].includes(room.phase))return fail(ack,'Remove players in lobby or results.');
+    const p=room.players.get(String(id||''));if(!p?.managed)return fail(ack,'Not a managed player.');
+    room.players.delete(p.id);room.participants.delete(p.id);room.votes.delete(p.id);room.clues.delete(p.id);
+    reply(ack,{ok:true});broadcast(room);
+  });
+  socket.on('managed:role',({id}={},ack)=>{
+    const room=rooms.get(socket.data.room);const p=manageAccess(socket,room,id);
+    if(!p)return fail(ack,'You do not control this player.');
+    if(!room.participants.has(p.id)||!['clues','voting'].includes(room.phase))return fail(ack,'No role in this round.');
+    reply(ack,{ok:true,round:room.round,imposter:p.id===room.imposterId,word:p.id===room.imposterId?null:room.word});
+  });
+  socket.on('managed:clue',({id,text}={},ack)=>{
+    const room=rooms.get(socket.data.room);const p=manageAccess(socket,room,id);
+    if(!p)return fail(ack,'You do not control this player.');
+    const error=submitClue(room,p,text,true);if(error)return fail(ack,error);
+    reply(ack,{ok:true});
+  });
+  socket.on('managed:vote',({id,targetId}={},ack)=>{
+    const room=rooms.get(socket.data.room);const p=manageAccess(socket,room,id);
+    if(!p)return fail(ack,'You do not control this player.');
+    const error=submitVote(room,p,String(targetId||''),true);if(error)return fail(ack,error);
+    reply(ack,{ok:true});
+  });
+  socket.on('host:edit-clue',({code,id,text}={},ack)=>{
+    const room=hostOnly(socket,String(code||''),ack);if(!room)return;
+    const p=room.players.get(String(id||''));if(!p)return fail(ack,'Player not found.');
+    const error=submitClue(room,p,text,true);if(error)return fail(ack,error);
+    reply(ack,{ok:true});
+  });
+  socket.on('host:edit-vote',({code,id,targetId}={},ack)=>{
+    const room=hostOnly(socket,String(code||''),ack);if(!room)return;
+    const p=room.players.get(String(id||''));if(!p)return fail(ack,'Player not found.');
+    const error=submitVote(room,p,String(targetId||''),true);if(error)return fail(ack,error);
+    reply(ack,{ok:true});
+  });
   socket.on('host:remove-player',({code,id}={},ack)=>{
     const room=hostOnly(socket,String(code||''),ack);if(!room)return;
     if(room.phase!=='lobby'&&room.phase!=='results')return fail(ack,'Wait for the round to end before removing players.');
@@ -149,23 +235,23 @@ io.on('connection',socket=>{
     if(room.starting)return fail(ack,'A round update is already in progress.');
     if(isNew && !['lobby','results'].includes(room.phase))return fail(ack,'Finish this round first, or use reroll/restart.');
     if(!isNew && !['clues','voting'].includes(room.phase))return fail(ack,'You can only reroll or restart during clues or voting.');
-    const connected=[...room.players.values()].filter(p=>p.socketId && io.sockets.sockets.has(p.socketId));
-    if(connected.length<3)return fail(ack,`Only ${connected.length} of ${room.players.size} registered players are connected. At least 3 connected player phones are required.`);
+    const connected=[...room.players.values()].filter(p=>isPresent(room,p));
+    if(connected.length<3)return fail(ack,`Only ${connected.length} of ${room.players.size} registered players are connected. At least 3 present players are required (phones, shared seats, or host-managed).`);
     room.starting=true;
     try {
       const next=await nextWord();
       if(rooms.get(room.code)!==room || room.hostSocket!==socket.id)return fail(ack,'Host session changed. Refresh the host page.');
-      const live=connected.filter(p=>p.socketId && io.sockets.sockets.has(p.socketId));
+      const live=connected.filter(p=>isPresent(room,p));
       if(live.length<3)return fail(ack,'A player disconnected. Reconnect at least 3 players and try again.');
       // The active group includes players who joined while the new word was being loaded.
-      const allLive=[...room.players.values()].filter(p=>p.socketId&&io.sockets.sockets.has(p.socketId));
+      const allLive=[...room.players.values()].filter(p=>isPresent(room,p));
       const previousImposter=room.imposterId;
       const keepImposter=mode==='reroll' && allLive.some(p=>p.id===previousImposter);
       room.round++;
       room.phase='clues';room.votes=new Map();room.clues=new Map();room.votingStartedAt=null;room.result=null;
       room.participants=new Set(allLive.map(p=>p.id));room.word=next;
       room.imposterId=keepImposter?previousImposter:allLive[rand(allLive.length)].id;
-      for(const p of allLive){const connectedSocket=io.sockets.sockets.get(p.socketId);if(connectedSocket)giveRole(connectedSocket,room,p);}
+      for(const p of allLive){if(!p.managed){const connectedSocket=io.sockets.sockets.get(p.socketId);if(connectedSocket)giveRole(connectedSocket,room,p);}}
       broadcast(room);reply(ack,{ok:true});
     }catch(e){console.error('Could not save word history:',e);fail(ack,'Could not save word history. Check server storage.');}
     finally{room.starting=false;}
@@ -185,7 +271,7 @@ io.on('connection',socket=>{
   socket.on('host:vote',({code,seconds}={},ack)=>{
     const room=hostOnly(socket,String(code||''),ack);if(!room)return;
     if(room.phase!=='clues') return fail(ack,'Not in clue phase.');
-    const required=[...room.participants].filter(id=>{const p=room.players.get(id);return p?.socketId&&io.sockets.sockets.has(p.socketId)});
+    const required=[...room.participants].filter(id=>{const p=room.players.get(id);return p&&isPresent(room,p)});
     if(!required.length||required.some(id=>!room.clues.has(id)))return fail(ack,`Waiting for clues: ${required.filter(id=>room.clues.has(id)).length}/${required.length} connected players have submitted.`);
     room.phase='voting';room.votingStartedAt=Date.now();room.votingSeconds=[30,60,90,120,180,240,300].includes(Number(seconds))?Number(seconds):90;
     broadcast(room);reply(ack,{ok:true});

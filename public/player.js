@@ -53,7 +53,7 @@ function join(resume=false){
  });
 }
 function render(s){if(!session||s.code!==session.code)return;let prevRound=state?.round;state=s;
- if(prevRound!==undefined&&prevRound!==s.round){if(role?.round!==s.round)role=null;shown=false;selected=null;cluePending=false;votePending=false;$('clueInput').value='';$('voteError').textContent='';}
+ if(prevRound!==undefined&&prevRound!==s.round){closeShared();if(role?.round!==s.round)role=null;shown=false;selected=null;cluePending=false;votePending=false;$('clueInput').value='';$('voteError').textContent='';}
  const me=s.players.find(p=>p.id===session.id),playing=!!me?.active;
  $('phase').textContent=t(s.phase.toUpperCase());$('round').textContent=t('ROUND')+' '+s.round;
  $('clueCard').classList.toggle('hidden',!playing||s.phase!=='clues');const submitted=!!me?.clueSubmitted;$('clueInput').disabled=submitted||cluePending;$('clueBtn').disabled=submitted||cluePending;$('clueBtn').textContent=t(submitted?'Clue submitted ✓':'Submit clue');$('clueStatus').textContent=submitted?t('Your clue is visible to everyone.'):(cluePending?t('Submitting...'):'');
@@ -68,7 +68,7 @@ function render(s){if(!session||s.code!==session.code)return;let prevRound=state
  if(s.phase==='results'){const r=s.result;$('instructions').textContent=t('Round complete. Watch the host screen for the full voting breakdown.');
  $('results').innerHTML=`<div class="eyebrow">${t('THE REVEAL')}</div><div class="result" style="margin:18px 0">${safe(r.imposterName)} ${t('was the Imposter')}</div><div class="muted">${t('Secret word')}</div><div class="word">${safe(word(r.word))}</div><div class="winner ${r.correct?'':'loser'}">${t(r.correct?'Players win!':'Imposter wins!')}</div>`;}
  if(s.hostOnline===false&&s.phase!=='results')$('instructions').textContent+=' Host disconnected — the room will close shortly unless the same tab reconnects. / Anfitrión desconectado — la sala se cerrará pronto si no regresa la misma pestaña.';
- updateRole();}
+ updateRole();renderShared(s);}
 function updateRole(){if(!state||!['clues','voting'].includes(state.phase))return;
  $('cover').classList.toggle('hidden',shown);$('secret').classList.toggle('hidden',!shown);
  if(!role||role.round!==state.round){$('cover').querySelector('h2').textContent=t('Loading your role...');$('reveal').disabled=true;return;}
@@ -96,3 +96,62 @@ if(codeFromUrl&&session&&session.code!==codeFromUrl){session=null;sessionStorage
 
 function updateClock(){const el=$('voteTimer');if(!el||!state||state.phase!=='voting'||!state.votingStartedAt)return;const left=state.votingSeconds-Math.floor((Date.now()-state.votingStartedAt)/1000);const abs=Math.abs(left);el.textContent=(left<0?t('Overtime')+': +':t('Voting timer')+': ')+String(Math.floor(abs/60)).padStart(2,'0')+':'+String(abs%60).padStart(2,'0');}
 setInterval(updateClock,1000);
+
+
+// Each extra player controlled by this phone has an independent seat, clue and vote.
+let activeShared=null,sharedRevealData=null;
+function sharedCall(event,payload,callback){
+ socket.timeout(10000).emit(event,payload,(err,r)=>{
+  $('sharedMessage').textContent=err?'Connection timed out / Tiempo agotado':r?.ok?'':r?.error||'Request failed';
+  if(!err&&r?.ok&&callback)callback(r);
+ });
+}
+function closeShared(){activeShared=null;sharedRevealData=null;$('sharedReveal').disabled=false;$('sharedActions').classList.add('hidden');$('sharedSecret').classList.add('hidden');$('sharedWord').textContent='';shown=false;if(role)updateRole();}
+function renderShared(s){
+ if(!['clues','voting'].includes(s.phase)){closeShared();$('sharedPanel').classList.add('hidden');return;}
+ const members=s.players.filter(p=>p.managed&&p.controllerId===session?.id);
+ $('sharedPanel').classList.toggle('hidden',members.length===0);
+ $('sharedChoices').innerHTML=members.map(p=>`<button class="secondary" data-id="${safe(p.id)}" style="margin:4px">${safe(p.name)} ${p.clueSubmitted?'✓':''}</button>`).join('');
+ $('sharedChoices').querySelectorAll('button').forEach(btn=>btn.onclick=()=>{
+  activeShared=btn.dataset.id;sharedRevealData=null;shown=false;updateRole();$('sharedReveal').disabled=false;$('sharedReveal').classList.remove('hidden');
+  $('sharedName').textContent=members.find(p=>p.id===activeShared)?.name||'Player';
+  $('sharedActions').classList.remove('hidden');$('sharedSecret').classList.add('hidden');$('sharedWord').textContent='';$('sharedMessage').textContent='';
+  renderSharedInputs();
+ });
+ if(activeShared&&!members.some(p=>p.id===activeShared))closeShared();
+ if(activeShared)renderSharedInputs();
+}
+function renderSharedInputs(){
+ if(!activeShared||!state)return;
+ const p=state.players.find(p=>p.id===activeShared);
+ $('sharedCluePanel').classList.toggle('hidden',state.phase!=='clues'||!p?.active);
+ $('sharedVotePanel').classList.toggle('hidden',state.phase!=='voting'||!p?.active);
+ $('sharedClueInput').value=state.clues.find(c=>c.id===activeShared)?.text||$('sharedClueInput').value;
+ $('sharedClueBtn').textContent=p?.clueSubmitted?'Update clue / Cambiar pista':'Submit clue / Enviar pista';
+ $('sharedVoteBtn').textContent=p?.hasVoted?'Change vote / Cambiar voto':'Submit vote / Enviar voto';
+ const old=$('sharedVoteTarget').value;
+ $('sharedVoteTarget').innerHTML=state.players.filter(x=>x.active&&x.id!==activeShared).map(x=>`<option value="${safe(x.id)}">${safe(x.name)}</option>`).join('');
+ if([...$('sharedVoteTarget').options].some(x=>x.value===old))$('sharedVoteTarget').value=old;
+}
+$('sharedReveal').onclick=()=>{
+ if(!activeShared||!state||!['clues','voting'].includes(state.phase))return;
+ const requestedId=activeShared,requestedRound=state.round;
+ // Hide the primary player's secret when passing the phone.
+ shown=false;updateRole();
+ $('sharedReveal').disabled=true;
+ sharedCall('managed:role',{id:requestedId},r=>{
+  // An earlier response must never reveal a role after switching players,
+  // rerolling a word, switching controllers, or leaving the round.
+  const stillControlled=state?.players.some(p=>p.id===requestedId&&p.managed&&p.controllerId===session?.id);
+  if(activeShared!==requestedId||state?.round!==requestedRound||!stillControlled||!['clues','voting'].includes(state?.phase))return;
+  $('sharedReveal').disabled=false;sharedRevealData=r;
+  $('sharedWord').textContent=r.imposter?'IMPOSTER':word(r.word);
+  $('sharedSecret').classList.remove('hidden');$('sharedReveal').classList.add('hidden');
+ });
+ // A request can time out; the player must be allowed to try again.
+ setTimeout(()=>{if(activeShared===requestedId)$('sharedReveal').disabled=false;},10500);
+};
+$('sharedHide').onclick=()=>{$('sharedSecret').classList.add('hidden');$('sharedWord').textContent='';$('sharedReveal').disabled=false;$('sharedReveal').classList.remove('hidden');sharedRevealData=null;};
+$('sharedDone').onclick=()=>{closeShared();$('sharedReveal').classList.remove('hidden');};
+$('sharedClueBtn').onclick=()=>{if(activeShared)sharedCall('managed:clue',{id:activeShared,text:$('sharedClueInput').value},()=>{$('sharedClueInput').value='';});};
+$('sharedVoteBtn').onclick=()=>{if(activeShared)sharedCall('managed:vote',{id:activeShared,targetId:$('sharedVoteTarget').value});};

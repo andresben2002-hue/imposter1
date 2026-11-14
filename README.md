@@ -133,3 +133,6 @@ Run `npm test`: simulated server, UI-structure and word-history tests. These tes
 ## Audit v4.2.1
 
 See `AUDIT.md` for confirmed fixes, remaining connectivity limitations, and recommended live-device acceptance checks.
+
+## v4.5 audit update
+See `BUG-AUDIT-v4.5.md` for fixes, verification, and remaining limitations.

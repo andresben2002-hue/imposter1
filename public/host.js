@@ -18,12 +18,15 @@ function base(){return $('baseUrl').value.trim().replace(/\/$/,'')||location.ori
 function updateQR(){if(!roomCode)return;const link=base()+'/player.html?room='+roomCode;$('joinLink').href=link;$('joinLink').textContent=link;$('qr').src='/api/qr?url='+encodeURIComponent(link);}
 function show(){$('intro').classList.add('hidden');$('game').classList.remove('hidden');$('code').textContent=roomCode;updateQR();}
 async function getNetwork(){try{const r=await fetch('/api/network');const j=await r.json();networkUrl=j.urls[0]||'';if(networkUrl&&['localhost','127.0.0.1'].includes(location.hostname)){$('baseUrl').value=networkUrl;updateQR();}}catch{}}
-function render(s){if(!s||!roomCode||s.code!==roomCode)return;state=s;hostReady=socket.connected;show();$('phase').textContent=t(s.phase.toUpperCase());$('round').textContent=t('ROUND')+' '+s.round;$('count').textContent=`(${s.onlineCount??s.players.filter(p=>p.online).length} ${t('connected')} / ${s.players.length} ${t('registered')})`;
+function render(s){if(!s||!roomCode||s.code!==roomCode)return;
+ if(state&&(s.round!==state.round||(['clues','voting'].includes(state.phase)&&!['clues','voting'].includes(s.phase)))){$('managePrivate').classList.add('hidden');$('managePrivateText').textContent='';}
+ state=s;hostReady=socket.connected;show();$('phase').textContent=t(s.phase.toUpperCase());$('round').textContent=t('ROUND')+' '+s.round;$('count').textContent=`(${s.onlineCount??s.players.filter(p=>p.online).length} present / ${s.players.length} ${t('registered')})`;
  $('players').innerHTML=s.players.map(p=>`<div class="player ${p.online?'':'off'}"><span>${safe(p.name)}</span><span>${!p.online?t('offline'):s.phase!=='lobby'&&!p.active?t('spectator'):s.phase==='voting'?(p.hasVoted?'✓ '+t('voted'):'…'):'●'}${!p.online&&['lobby','results'].includes(s.phase)?` <button class="secondary remove-offline" data-id="${safe(p.id)}" title="Remove disconnected player / Quitar jugador desconectado" style="padding:5px 8px;font-size:12px">Remove / Quitar</button>`:''}</span></div>`).join('');
  $('players').querySelectorAll('.remove-offline').forEach(btn=>btn.onclick=()=>{
   if(!socket.connected||!hostReady){error('Server disconnected.');return;}
   socket.emit('host:remove-player',{code:roomCode,id:btn.dataset.id},r=>{if(!r?.ok)error(r?.error||'Could not remove player.');});
  });
+ renderManage(s);
  $('noPlayers').classList.toggle('hidden',s.players.length!==0);
  const online=s.players.filter(p=>p.online).length;
  $('clueList').classList.toggle('hidden',!['clues','voting','results'].includes(s.phase));$('clueList').innerHTML=(s.clues||[]).map(c=>`<div class="player"><strong>${safe(c.name)}</strong><span>${safe(c.text)}</span></div>`).join('') || `<p class="muted">${t('No clues submitted yet.')}</p>`;
@@ -33,7 +36,7 @@ function render(s){if(!s||!roomCode||s.code!==roomCode)return;state=s;hostReady=
  $('primary').classList.remove('hidden');$('reset').classList.add('hidden');$('result').classList.add('hidden');
  const midround=['clues','voting'].includes(s.phase);
  for(const id of ['reroll','restart']){$(id).classList.toggle('hidden',!midround);$(id).disabled=pending||!socket.connected||!hostReady||online<3;}
- if(s.phase==='lobby'){$('actionTitle').textContent=t('Ready to begin?');$('description').textContent=t('Players join from their phones. Start when at least 3 players are connected.');$('primary').textContent=t('Start round');$('primary').disabled=pending||!socket.connected||!hostReady;$('description').textContent=online<3?`${t('Need 3 connected players to start.')} ${online}/3. ${t('The host screen does not count as a player.')} ${t('Disconnected players can rejoin with their original link.')}`:t('Players join from their phones. Start when at least 3 players are connected.');$('primary').onclick=()=>send('host:start');}
+ if(s.phase==='lobby'){$('actionTitle').textContent=t('Ready to begin?');$('description').textContent=t('Start when 3 players are present (own phones, shared seats, or host-managed).');$('primary').textContent=t('Start round');$('primary').disabled=pending||!socket.connected||!hostReady;$('description').textContent=online<3?`${t('Need 3 present players to start.')} ${online}/3. ${t('The host screen does not count as a player.')} ${t('Disconnected players can rejoin with their original link.')}`:t('Start when 3 players are present (own phones, shared seats, or host-managed).');$('primary').onclick=()=>send('host:start');}
  if(s.phase==='clues'){$('actionTitle').textContent=t('Give your clues');$('description').textContent=t('Every player privately sees their role. Go around the room; each person says ONE related word. Discuss who seems suspicious, then open voting.');$('primary').textContent=t('Open voting');$('description').textContent+=` ${s.submittedRequiredClues}/${s.requiredClues} ${t('clues submitted')}.`;$('primary').disabled=pending||!socket.connected||!hostReady||s.requiredClues===0||s.submittedRequiredClues<s.requiredClues;$('primary').onclick=()=>send('host:vote');}
  if(s.phase==='voting'){$('actionTitle').textContent=t('Cast your votes');$('description').textContent=t('Everyone selects the person they suspect on their phone. Once all votes are in (or whenever you are ready), reveal the answer.');$('primary').textContent=t('Reveal Imposter');$('primary').disabled=pending||!socket.connected||!hostReady;$('primary').onclick=()=>send('host:reveal');}
  if(s.phase==='results'){$('actionTitle').textContent=t('The reveal');$('description').textContent=t('Discuss the outcome, then return to the lobby for another round.');$('primary').classList.add('hidden');$('reset').classList.remove('hidden');$('reset').disabled=pending||!socket.connected||!hostReady;$('result').classList.remove('hidden');let r=s.result;
@@ -77,3 +80,63 @@ setInterval(()=>{if(roomCode&&socket.connected&&!pending)syncHost();},7000);
 // Informational voting countdown only. Never automatically submits, closes or reveals votes.
 function updateClock(){const el=$('voteTimer');if(!el||!state||state.phase!=='voting'||!state.votingStartedAt)return;const left=state.votingSeconds-Math.floor((Date.now()-state.votingStartedAt)/1000);const abs=Math.abs(left);el.textContent=(left<0?t('Overtime')+': +':t('Voting timer')+': ')+String(Math.floor(abs/60)).padStart(2,'0')+':'+String(abs%60).padStart(2,'0');}
 setInterval(updateClock,1000);
+
+
+// Lightweight host management. Role secrets are fetched only on an explicit reveal.
+function manageEmit(event,data,callback){
+ if(!socket.connected||!hostReady)return $('manageError').textContent='Host not connected / Anfitrión desconectado';
+ socket.timeout(10000).emit(event,{code:roomCode,...data},(err,r)=>{
+  $('manageError').textContent=err?'Server timeout / Tiempo agotado':r?.ok?'':r?.error||'Action failed';
+  if(!err&&r?.ok&&callback)callback(r);
+ });
+}
+function renderManage(s){
+ if(s.phase!=='voting'){$('managed-vote-editor').innerHTML='';$('managed-vote-editor').classList.add('hidden');}
+ const controllers=s.players.filter(p=>!p.managed);
+ const availableControllers=controllers.filter(p=>p.online);
+ const dropdown=$('managedController'),current=dropdown.value;
+ dropdown.innerHTML='<option value="">Host-managed / Anfitrión</option>'+availableControllers.map(p=>`<option value="${safe(p.id)}">${safe(p.name)} — phone</option>`).join('');
+ dropdown.value=availableControllers.some(p=>p.id===current)?current:'';
+ $('manageList').innerHTML=s.players.map(p=>{
+  const assigned=p.managed?(p.controllerId?s.players.find(x=>x.id===p.controllerId)?.name||'Missing phone':'Host'):'Own phone';
+  const controls=p.managed?`<select class="manage-controller" data-id="${safe(p.id)}" aria-label="Assign phone for ${safe(p.name)}"><option value="">Host-managed</option>${controllers.map(c=>`<option value="${safe(c.id)}" ${c.id===p.controllerId?'selected':''} ${c.online?'':'disabled'}>${safe(c.name)}'s phone${c.online?'':' (offline)'}</option>`).join('')}</select><button class="secondary manage-role" data-id="${safe(p.id)}">Private role</button><button class="secondary manage-remove" data-id="${safe(p.id)}">Remove</button>`:'';
+  const phaseControls=s.phase==='clues'?`<button class="secondary manage-clue" data-id="${safe(p.id)}">Edit clue</button>`:s.phase==='voting'?`<button class="secondary manage-vote" data-id="${safe(p.id)}">Edit vote</button>`:'';
+  return `<div class="player" style="flex-wrap:wrap;gap:8px"><div style="flex:1;min-width:125px"><strong>${safe(p.name)}</strong><div class="muted mini">${safe(assigned)} · ${p.online?'Present':'Offline'}</div></div><div class="row" style="flex-wrap:wrap">${controls}${phaseControls}</div></div>`;
+ }).join('')||'<p class="muted mini">No players yet</p>';
+ $('manageList').querySelectorAll('.manage-controller').forEach(el=>el.onchange=()=>{
+  $('managePrivate').classList.add('hidden');$('managePrivateText').textContent='';
+  manageEmit('host:assign-managed',{id:el.dataset.id,controllerId:el.value});
+ });
+ $('manageList').querySelectorAll('.manage-remove').forEach(el=>el.onclick=()=>{if(confirm('Remove this player? / ¿Quitar jugador?'))manageEmit('host:remove-managed',{id:el.dataset.id});});
+ $('manageList').querySelectorAll('.manage-role').forEach(el=>el.onclick=()=>{
+  if(!confirm('This role is private. Make sure the TV and other players cannot see the screen. Continue?'))return;
+  const requestedId=el.dataset.id,requestedRound=s.round;
+  manageEmit('managed:role',{id:requestedId},r=>{
+   if(state?.round!==requestedRound||!state?.players.some(x=>x.id===requestedId&&x.managed&&!x.controllerId)||!['clues','voting'].includes(state?.phase))return;
+   const p=state.players.find(x=>x.id===requestedId);
+   $('managePrivateName').textContent=p?.name||'Player';$('managePrivateText').textContent=r.imposter?'IMPOSTER':word(r.word);
+   $('managePrivate').classList.remove('hidden');
+  });
+ });
+ $('manageList').querySelectorAll('.manage-clue').forEach(el=>el.onclick=()=>{
+  const old=s.clues.find(c=>c.id===el.dataset.id)?.text||'';
+  const clue=prompt('Edit clue / Editar pista',old);if(clue!==null)manageEmit('host:edit-clue',{id:el.dataset.id,text:clue});
+ });
+ $('manageList').querySelectorAll('.manage-vote').forEach(el=>el.onclick=()=>{
+  const choices=s.players.filter(p=>p.active&&p.id!==el.dataset.id);
+  const editor=$('managed-vote-editor');
+  editor.innerHTML='';editor.className='row';editor.style.width='100%';
+  const label=document.createElement('span');label.textContent='Vote for / Votar por:';
+  const picker=document.createElement('select');
+  for(const player of choices){const option=document.createElement('option');option.value=player.id;option.textContent=player.name;picker.appendChild(option);}
+  const save=document.createElement('button');save.className='secondary';save.textContent='Save / Guardar';
+  save.onclick=()=>manageEmit('host:edit-vote',{id:el.dataset.id,targetId:picker.value},()=>{editor.innerHTML='';editor.classList.add('hidden');});
+  const cancel=document.createElement('button');cancel.className='secondary';cancel.textContent='Cancel / Cancelar';cancel.onclick=()=>{editor.innerHTML='';editor.classList.add('hidden');};
+  editor.append(label,picker,save,cancel);
+ });
+}
+$('managedAdd').onclick=()=>{
+ const name=$('managedName').value.trim();if(!name)return $('manageError').textContent='Enter a name / Escribe un nombre';
+ manageEmit('host:add-managed',{name,controllerId:$('managedController').value},()=>{$('managedName').value='';});
+};
+$('manageHide').onclick=()=>{$('managePrivate').classList.add('hidden');$('managePrivateText').textContent='';};
