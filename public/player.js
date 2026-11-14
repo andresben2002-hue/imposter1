@@ -116,6 +116,9 @@ function renderPass(s){
  const p=passPlayer(s);if(!p)return;
  const idx=seats.findIndex(x=>x.id===p.id);
  $('passProgress').textContent=`${idx+1} ${t('of')} ${seats.length}`;
+ $('passPrevious').disabled=passBusy||seats.length<2;
+ $('passForward').disabled=passBusy||seats.length<2;
+ $('passSwitchHint').textContent=t('Switch players any time. Private roles are hidden before each handoff.');
  $('passName').textContent=p.name;
  $('passHint').textContent=t('Hand the phone to the person named below.');
  $('passStatus').textContent=p.clueSubmitted&&s.phase==='clues'?t('Clue already submitted.'):p.hasVoted&&s.phase==='voting'?t('Vote already submitted.'):t('Only the named player should look at the screen.');
@@ -139,7 +142,7 @@ function passRequest(event,payload,onSuccess){passBusy=true;$('passError').textC
  socket.timeout(10000).emit(event,payload,(err,r)=>{
   passBusy=false;
   if(err||!r?.ok){$('passError').textContent=err?t('Request timed out. Try again.'):t(r?.error||'Request failed.');if(state)renderPass(state);return;}
-  onSuccess?.();if(state)renderPass(state);
+  onSuccess?.(r);if(state)renderPass(state);
  });
 }
 $('passReveal').onclick=()=>{
@@ -191,3 +194,16 @@ $('passNext').onclick=()=>{
  const next=pending.find(p=>p.id!==passSeat)||seats[(current+1)%seats.length];
  passSeat=next.id;passStep='cover';$('passError').textContent='';renderPass(state);
 };
+
+// Navigate through up to three seats at any time, even after a clue or vote.
+// Never carry a revealed role or an unsent clue over to another person's turn.
+function movePassSeat(direction){
+ if(passBusy||!state)return;
+ const seats=passSeats(state);if(seats.length<2)return;
+ const idx=seats.findIndex(p=>p.id===passSeat);
+ hidePassSecret();shown=false;updateRole();
+ passSeat=seats[((idx<0?0:idx)+direction+seats.length)%seats.length].id;
+ passStep='cover';$('passError').textContent='';renderPass(state);
+}
+$('passPrevious').onclick=()=>movePassSeat(-1);
+$('passForward').onclick=()=>movePassSeat(1);

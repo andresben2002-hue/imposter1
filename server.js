@@ -167,7 +167,13 @@ io.on('connection',socket=>{
     if(!name)return fail(ack,'Enter a name.');
     if(room.players.size>=20)return fail(ack,'This room is full.');
     if([...room.players.values()].some(p=>p.name.toLowerCase()===name.toLowerCase()))return fail(ack,'Name already taken.');
-    if(controllerId){const target=room.players.get(String(controllerId));if(!target||target.managed||!isPresent(room,target))return fail(ack,'Choose a connected phone player.');}
+    if(controllerId){
+      const target=room.players.get(String(controllerId));
+      if(!target||target.managed||!isPresent(room,target))return fail(ack,'Choose a connected phone player.');
+      // The phone owner is seat one; allow at most two extra seats.
+      const already=[...room.players.values()].filter(x=>x.managed&&x.controllerId===target.id&&true).length;
+      if(already>=2)return fail(ack,'A phone supports at most 3 players.');
+    }
     const p={id:token().slice(0,12),name,managed:true,controllerId:controllerId||null,socketId:null};
     room.players.set(p.id,p);
     if(['clues','voting'].includes(room.phase))room.participants.add(p.id);
@@ -176,7 +182,13 @@ io.on('connection',socket=>{
   socket.on('host:assign-managed',({code,id,controllerId}={},ack)=>{
     const room=hostOnly(socket,String(code||''),ack);if(!room)return;
     const p=room.players.get(String(id||''));if(!p?.managed)return fail(ack,'Not a managed player.');
-    if(controllerId){const target=room.players.get(String(controllerId));if(!target||target.managed||!isPresent(room,target))return fail(ack,'Choose a connected phone player.');}
+    if(controllerId){
+      const target=room.players.get(String(controllerId));
+      if(!target||target.managed||!isPresent(room,target))return fail(ack,'Choose a connected phone player.');
+      // The phone owner is seat one; allow at most two extra seats.
+      const already=[...room.players.values()].filter(x=>x.managed&&x.controllerId===target.id&&x.id!==p.id).length;
+      if(already>=2)return fail(ack,'A phone supports at most 3 players.');
+    }
     p.controllerId=controllerId||null;
     reply(ack,{ok:true});broadcast(room);
   });

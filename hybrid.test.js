@@ -4,22 +4,23 @@ const express=()=>({use(){},get(){}});express.static=()=>{};const fakeRequire=x=
 vm.runInNewContext(fs.readFileSync(__dirname+'/server.js','utf8'),{require:fakeRequire,__dirname,process,console,Buffer,setTimeout,clearTimeout});
 return{connect(){const handlers={},events=[];const s={id:crypto.randomUUID(),data:{},joined:new Set(),on(e,fn){handlers[e]=fn},join(r){this.joined.add(r)},leave(r){this.joined.delete(r)},emit(e,v){events.push({e,v})},events,call(e,arg={}){return new Promise((resolve,reject)=>{try{handlers[e](arg,r=>resolve(r))}catch(err){reject(err)}})},disconnect(){sockets.delete(this.id);handlers.disconnect?.()}};sockets.set(s.id,s);onConnect(s);return s}};}
 function state(host){return host.events.filter(e=>e.e==='room:state').at(-1)?.v;}
-test('one phone controls four distinct players and protected individual secrets',async()=>{
+test('one phone controls three distinct players and protected individual secrets',async()=>{
 const {connect}=setup(),h=connect(),created=await h.call('host:create'),code=created.code,phone=connect();
 const owner=await phone.call('player:join',{code,name:'Phone owner'});assert.equal(owner.ok,true);
-const extras=[];for(let i=0;i<3;i++){const r=await h.call('host:add-managed',{code,name:'Friend '+i,controllerId:owner.id});assert.equal(r.ok,true);extras.push(r.id)}
-assert.equal(state(h).onlineCount,4);assert.equal(state(h).players.length,4);
+const extras=[];for(let i=0;i<2;i++){const r=await h.call('host:add-managed',{code,name:'Friend '+i,controllerId:owner.id});assert.equal(r.ok,true);extras.push(r.id)}
+assert.equal(state(h).onlineCount,3);assert.equal(state(h).players.length,3);
 assert.equal((await h.call('host:start',{code})).ok,true);
 for(const id of extras){const role=await phone.call('managed:role',{id});assert.equal(role.ok,true);assert.equal(role.round,1);assert.equal('word' in role,true)}
+assert.equal((await h.call('host:add-managed',{code,name:'Fourth',controllerId:owner.id})).ok,false);
 const intruder=connect();assert.equal((await intruder.call('managed:role',{id:extras[0]})).ok,false);
 assert.equal((await phone.call('managed:clue',{id:extras[0],text:'Ocean'})).ok,true);
-for(let i=1;i<3;i++)assert.equal((await phone.call('managed:clue',{id:extras[i],text:'Sand'})).ok,true);
+for(let i=1;i<2;i++)assert.equal((await phone.call('managed:clue',{id:extras[i],text:'Sand'})).ok,true);
 assert.equal((await phone.call('player:clue',{text:'Sea'})).ok,true);
-assert.equal(state(h).clueCount,4);assert.equal((await h.call('host:vote',{code,seconds:300})).ok,true);
+assert.equal(state(h).clueCount,3);assert.equal((await h.call('host:vote',{code,seconds:300})).ok,true);
 for(const id of extras)assert.equal((await phone.call('managed:vote',{id,targetId:owner.id})).ok,true);
-assert.equal(state(h).voteCount,3);
+assert.equal(state(h).voteCount,2);
 assert.equal((await phone.call('managed:vote',{id:extras[0],targetId:extras[1]})).ok,true);
-assert.equal(state(h).voteCount,3);
+assert.equal(state(h).voteCount,2);
 assert.equal((await h.call('host:reveal',{code})).ok,true);
 });
 test('host-managed participant can play while offline and be corrected by host',async()=>{
@@ -79,4 +80,21 @@ test('host vote editor remains outside player list, avoiding destruction by stat
  const js=fs.readFileSync(__dirname+'/public/host.js','utf8');
  assert.match(html,/<div id="manageList"><\/div><div id="managed-vote-editor"/);
  assert.doesNotMatch(js,/closest\('\.player'\)\.appendChild\(editor\)/);
+});
+
+test('shared phone has safe back/forward navigation and preserves role response for second seat',()=>{
+ const js=fs.readFileSync(__dirname+'/public/player.js','utf8');
+ const html=fs.readFileSync(__dirname+'/public/player.html','utf8');
+ assert.match(js,/onSuccess\?\.\(r\)/);
+ assert.match(js,/showPassRole\(r\.imposter,r\.word\)/);
+ assert.match(js,/function movePassSeat\(direction\)/);
+ assert.match(js,/hidePassSecret\(\);shown=false;updateRole\(\)/);
+ for(const id of ['passPrevious','passForward'])assert.match(html,new RegExp(`id="${id}"`));
+});
+test('one controller can have two extra seats but not three; another phone can be assigned',async()=>{
+ const {connect}=setup(),host=connect(),created=await host.call('host:create'),a=connect(),b=connect();
+ const first=await a.call('player:join',{code:created.code,name:'A'}),second=await b.call('player:join',{code:created.code,name:'B'});
+ for(const name of ['C','D'])assert.equal((await host.call('host:add-managed',{code:created.code,name,controllerId:first.id})).ok,true);
+ const third=await host.call('host:add-managed',{code:created.code,name:'E',controllerId:first.id});assert.equal(third.ok,false);
+ assert.equal((await host.call('host:add-managed',{code:created.code,name:'E',controllerId:second.id})).ok,true);
 });

@@ -1,3 +1,5 @@
+> **v4.7:** Shared-phone reveal fix, previous/next navigation, and a 3-player limit per phone. See `RELEASE-v4.7.md`.
+
 # v4.6 update
 
 See [RELEASE-v4.6.md](RELEASE-v4.6.md) for full translation and guided pass-the-phone changes.

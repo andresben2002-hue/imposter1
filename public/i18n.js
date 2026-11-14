@@ -178,6 +178,7 @@ const translations={
 'You are already connected in another tab.':'Ya estás conectado en otra pestaña.',
 'Reconnecting...':'Reconectando…',
 'Hide and pass phone':'Ocultar y pasar el celular',
+'Previous player':'Jugador anterior', 'Next player':'Siguiente jugador', 'Switch players any time. Private roles are hidden before each handoff.':'Puedes cambiar de jugador cuando quieras. Los roles privados se ocultan antes de pasar el celular.',
 'PARTY':'FIESTA',
 'WHO IS THE IMPOSTER?':'¿QUIÉN ES EL IMPOSTOR?',
 'Synchronizing room':'Sincronizando la sala',
